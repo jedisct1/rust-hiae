@@ -1,0 +1,59 @@
+//! ARM NEON + Crypto Extensions optimized implementation.
+
+#![allow(unsafe_code)]
+
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::*;
+
+/// ARM NEON + Crypto optimized AESL implementation.
+///
+/// This implementation leverages the ARM Crypto Extensions which provide
+/// dedicated AES instructions. The pattern z ^ AESL(x) is optimized using
+/// fused NEON operations.
+#[target_feature(enable = "neon,aes")]
+unsafe fn aesl_impl(block: &[u8; 16]) -> [u8; 16] {
+    // Load the input block into a NEON register
+    let input = vld1q_u8(block.as_ptr());
+
+    // Zero key for AES round (since we want AESL without AddRoundKey)
+    let zero_key = vdupq_n_u8(0);
+
+    // Apply AES encryption round: SubBytes + ShiftRows + MixColumns
+    // vaeseq_u8 performs SubBytes + ShiftRows + AddRoundKey
+    // Since we want AESL without AddRoundKey, we use zero as the key
+    let after_sub_shift = vaeseq_u8(input, zero_key);
+
+    // vaesmcq_u8 performs MixColumns
+    let result = vaesmcq_u8(after_sub_shift);
+
+    // Store result back to array
+    let mut output = [0u8; 16];
+    vst1q_u8(output.as_mut_ptr(), result);
+    output
+}
+
+/// Safe wrapper around the ARM implementation.
+#[inline]
+pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
+    unsafe { aesl_impl(block) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_arm_aesl() {
+        let input = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        let expected = [
+            0x63, 0x79, 0xe6, 0xd9, 0xf4, 0x67, 0xfb, 0x76, 0xad, 0x06, 0x3c, 0xf4, 0xd2, 0xeb,
+            0x8a, 0xa3,
+        ];
+
+        let result = unsafe { aesl_impl(&input) };
+        assert_eq!(result, expected);
+    }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "hiae"
+version = "0.1.0"
+edition = "2021"
+authors = ["Frank Denis"]
+description = "High-throughput Authenticated Encryption (HiAE) algorithm implementation"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hiae-aead/draft-pham-hiae"
+keywords = ["cryptography", "aead", "encryption", "authentication"]
+categories = ["cryptography", "no-std"]
+
+[features]
+default = ["std"]
+std = []
+aes-ni = []
+neon = []
+
+[dependencies]
+zeroize = { version = "1.7", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+lto = true
+codegen-units = 1
+
