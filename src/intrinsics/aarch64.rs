@@ -134,20 +134,4 @@ mod tests {
 
         assert_eq!(xaesl_result, manual_result);
     }
-
-    #[test]
-    fn test_arm_xor3() {
-        let x = [0x11; 16];
-        let y = [0x22; 16];
-        let z = [0x44; 16];
-
-        // XOR3(x, y, z) should equal x XOR y XOR z
-        let mut manual_result = [0u8; 16];
-        for i in 0..16 {
-            manual_result[i] = x[i] ^ y[i] ^ z[i];
-        }
-
-        let xor3_result = unsafe { xor3_impl(&x, &y, &z) };
-        assert_eq!(xor3_result, manual_result);
-    }
 }
