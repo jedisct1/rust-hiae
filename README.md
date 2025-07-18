@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hiae = "0.1.0"
+hiae = "0.1"
 ```
 
 Basic usage:
