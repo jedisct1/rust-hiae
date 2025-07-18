@@ -272,47 +272,6 @@ pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
     result
 }
 
-/// Portable batch AESL processing for 4 blocks with loop unrolling.
-#[cfg(not(any(
-    all(
-        target_arch = "aarch64",
-        target_feature = "neon",
-        target_feature = "aes"
-    ),
-    all(target_arch = "x86_64", target_feature = "aes")
-)))]
-#[inline]
-pub fn aesl_batch4(blocks: &[[u8; 16]; 4]) -> [[u8; 16]; 4] {
-    // Process all 4 blocks using the portable AESL implementation
-    // Unroll the loop for better optimization
-    [
-        aesl(&blocks[0]),
-        aesl(&blocks[1]),
-        aesl(&blocks[2]),
-        aesl(&blocks[3]),
-    ]
-}
-
-/// Portable batch XOR processing for 4 block pairs with loop unrolling.
-#[cfg(not(any(
-    all(target_arch = "aarch64", target_feature = "neon"),
-    all(target_arch = "x86_64", target_feature = "sse2")
-)))]
-#[inline]
-pub fn xor_batch4(a_blocks: &[[u8; 16]; 4], b_blocks: &[[u8; 16]; 4]) -> [[u8; 16]; 4] {
-    let mut result = [[0u8; 16]; 4];
-
-    // Unroll the outer loop and inner loop for better performance
-    for i in 0..16 {
-        result[0][i] = a_blocks[0][i] ^ b_blocks[0][i];
-        result[1][i] = a_blocks[1][i] ^ b_blocks[1][i];
-        result[2][i] = a_blocks[2][i] ^ b_blocks[2][i];
-        result[3][i] = a_blocks[3][i] ^ b_blocks[3][i];
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
