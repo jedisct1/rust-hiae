@@ -56,7 +56,7 @@ fn bench_encrypt_sizes(c: &mut Criterion) {
     for size in sizes {
         let (plaintext, aad, key, nonce) = generate_test_data(size);
 
-        group.throughput(Throughput::Bits((size as u64) * 8));
+        group.throughput(Throughput::Elements((size as u64) * 8));
         group.bench_with_input(BenchmarkId::new("encrypt", size), &size, |b, _| {
             b.iter(|| {
                 let result = encrypt(
@@ -83,7 +83,7 @@ fn bench_decrypt_sizes(c: &mut Criterion) {
         let (plaintext, aad, key, nonce) = generate_test_data(size);
         let (ciphertext, tag) = encrypt(&plaintext, &aad, &key, &nonce).unwrap();
 
-        group.throughput(Throughput::Bits((size as u64) * 8));
+        group.throughput(Throughput::Elements((size as u64) * 8));
         group.bench_with_input(BenchmarkId::new("decrypt", size), &size, |b, _| {
             b.iter(|| {
                 let result = decrypt(
@@ -110,7 +110,7 @@ fn bench_roundtrip_sizes(c: &mut Criterion) {
     for size in sizes {
         let (plaintext, aad, key, nonce) = generate_test_data(size);
 
-        group.throughput(Throughput::Bits((size as u64) * 8));
+        group.throughput(Throughput::Elements((size as u64) * 8));
         group.bench_with_input(BenchmarkId::new("encrypt_decrypt", size), &size, |b, _| {
             b.iter(|| {
                 let (ciphertext, tag) = encrypt(
