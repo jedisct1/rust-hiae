@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use hiae::{decrypt, encrypt};
+use std::hint::black_box;
 
 /// Generate test data of the specified size
 fn generate_test_data(size: usize) -> (Vec<u8>, Vec<u8>, [u8; 32], [u8; 16]) {
