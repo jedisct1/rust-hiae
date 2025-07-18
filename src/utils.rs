@@ -66,7 +66,7 @@ pub fn tail(data: &[u8], n_bits: usize) -> Vec<u8> {
     let n_bytes = n_bits / 8;
     let n_bits_partial = n_bits % 8;
 
-    if data.len() == 0 {
+    if data.is_empty() {
         return Vec::new();
     }
 
@@ -101,6 +101,7 @@ pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
 
 /// XOR two byte slices of equal length.
 #[inline]
+#[allow(dead_code)]
 pub fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
     debug_assert_eq!(a.len(), b.len());
     a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect()

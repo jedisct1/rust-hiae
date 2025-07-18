@@ -16,7 +16,7 @@ aes-ni = []
 neon = []
 
 [dependencies]
-zeroize = { version = "1.7", default-features = false, features = ["derive"] }
+zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 hex = "0.4"
