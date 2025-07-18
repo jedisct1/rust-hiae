@@ -50,19 +50,14 @@ pub fn truncate(data: &[u8], n_bits: usize) -> Vec<u8> {
 
 /// Split data into blocks of specified size, ignoring partial blocks.
 #[inline]
-pub fn split_blocks(data: &[u8], block_size_bytes: usize) -> Vec<[u8; 16]> {
+pub fn split_blocks(data: &[u8], block_size_bytes: usize) -> impl Iterator<Item = [u8; 16]> + '_ {
     debug_assert_eq!(block_size_bytes, 16);
 
-    let mut blocks = Vec::new();
-    let mut chunks = data.chunks_exact(block_size_bytes);
-
-    for chunk in chunks.by_ref() {
+    data.chunks_exact(block_size_bytes).map(|chunk| {
         let mut block = [0u8; 16];
         block.copy_from_slice(chunk);
-        blocks.push(block);
-    }
-
-    blocks
+        block
+    })
 }
 
 /// Get the last n bits of data as bytes.
