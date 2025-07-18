@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::intrinsics;
-use crate::utils::{self, ct_eq, le64, split_blocks, truncate, xor_block, zero_pad};
+use crate::utils::{self, ct_eq, le64, split_blocks, xor_block, zero_pad};
 use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -144,9 +144,8 @@ impl HiaeState {
     /// Decrypt a partial block.
     fn dec_partial(&mut self, cn: &[u8]) -> Vec<u8> {
         // Step 1: Recover keystream
-        let zero_padded = zero_pad(cn, 128);
         let mut zero_block = [0u8; 16];
-        zero_block.copy_from_slice(&zero_padded[..16]);
+        zero_block[..cn.len()].copy_from_slice(cn);
 
         let ks = xor_block(
             &xor_block(
@@ -160,19 +159,17 @@ impl HiaeState {
         let tail_bits = 128 - (cn.len() * 8);
         let tail_bytes = utils::tail(&ks, tail_bits);
 
-        let mut ci = Vec::with_capacity(16);
-        ci.extend_from_slice(cn);
-        ci.extend_from_slice(&tail_bytes);
-        ci.resize(16, 0);
-
         let mut ci_block = [0u8; 16];
-        ci_block.copy_from_slice(&ci);
+        ci_block[..cn.len()].copy_from_slice(cn);
+        ci_block[cn.len()..].copy_from_slice(&tail_bytes[..16 - cn.len()]);
 
         // Step 3: Decrypt full block
         let mi = self.update_dec(&ci_block);
 
         // Step 4: Extract partial plaintext
-        truncate(&mi, cn.len() * 8)
+        let mut result = Vec::with_capacity(cn.len());
+        result.extend_from_slice(&mi[..cn.len()]);
+        result
     }
 
     /// Generate authentication tag.
@@ -187,13 +184,8 @@ impl HiaeState {
 
         self.diffuse(&t);
 
-        // XOR all state blocks
-        let mut tag = self.blocks[0];
-        for i in 1..16 {
-            tag = xor_block(&tag, &self.blocks[i]);
-        }
-
-        tag
+        // XOR all state blocks using vectorized reduction
+        intrinsics::xor_reduce_blocks(&self.blocks)
     }
 }
 
@@ -210,28 +202,33 @@ pub fn encrypt(
     let mut state = HiaeState::new();
     state.init(key, nonce);
 
-    let mut ciphertext = Vec::new();
+    // Pre-allocate ciphertext with exact capacity
+    let mut ciphertext = Vec::with_capacity(plaintext.len());
 
     // Process associated data
-    let ad_padded = zero_pad(aad, 128);
-    let ad_blocks = split_blocks(&ad_padded, 16);
-    for block in ad_blocks {
-        state.absorb(&block);
+    if !aad.is_empty() {
+        let ad_padded = zero_pad(aad, 128);
+        let ad_blocks = split_blocks(&ad_padded, 16);
+        for block in ad_blocks {
+            state.absorb(&block);
+        }
     }
 
     // Encrypt plaintext
-    let msg_padded = zero_pad(plaintext, 128);
-    let msg_blocks = split_blocks(&msg_padded, 16);
-    for block in msg_blocks {
-        let encrypted_block = state.enc(&block);
-        ciphertext.extend_from_slice(&encrypted_block);
+    if !plaintext.is_empty() {
+        let msg_padded = zero_pad(plaintext, 128);
+        let msg_blocks = split_blocks(&msg_padded, 16);
+        for block in msg_blocks {
+            let encrypted_block = state.enc(&block);
+            ciphertext.extend_from_slice(&encrypted_block);
+        }
+
+        // Truncate ciphertext to original plaintext length
+        ciphertext.truncate(plaintext.len());
     }
 
     // Generate authentication tag
     let tag = state.finalize((aad.len() * 8) as u64, (plaintext.len() * 8) as u64);
-
-    // Truncate ciphertext to original plaintext length
-    ciphertext = truncate(&ciphertext, plaintext.len() * 8);
 
     Ok((ciphertext, tag))
 }
@@ -250,34 +247,42 @@ pub fn decrypt(
     let mut state = HiaeState::new();
     state.init(key, nonce);
 
-    let mut plaintext = Vec::new();
+    // Pre-allocate plaintext with exact capacity
+    let mut plaintext = Vec::with_capacity(ciphertext.len());
 
     // Process associated data
-    let ad_padded = zero_pad(aad, 128);
-    let ad_blocks = split_blocks(&ad_padded, 16);
-    for block in ad_blocks {
-        state.absorb(&block);
+    if !aad.is_empty() {
+        let ad_padded = zero_pad(aad, 128);
+        let ad_blocks = split_blocks(&ad_padded, 16);
+        for block in ad_blocks {
+            state.absorb(&block);
+        }
     }
 
     // Decrypt ciphertext
-    let ct_blocks = split_blocks(ciphertext, 16);
-    let remainder = ciphertext.len() % 16;
+    if !ciphertext.is_empty() {
+        let ct_blocks = split_blocks(ciphertext, 16);
+        let remainder = ciphertext.len() % 16;
 
-    for block in ct_blocks {
-        let decrypted_block = state.dec(&block);
-        plaintext.extend_from_slice(&decrypted_block);
-    }
+        for block in ct_blocks {
+            let decrypted_block = state.dec(&block);
+            plaintext.extend_from_slice(&decrypted_block);
+        }
 
-    // Handle partial block if present
-    if remainder != 0 {
-        let partial_start = ciphertext.len() - remainder;
-        let partial_ct = &ciphertext[partial_start..];
-        let partial_pt = state.dec_partial(partial_ct);
-        plaintext.extend_from_slice(&partial_pt);
+        // Handle partial block if present
+        if remainder != 0 {
+            let partial_start = ciphertext.len() - remainder;
+            let partial_ct = &ciphertext[partial_start..];
+            let partial_pt = state.dec_partial(partial_ct);
+            plaintext.extend_from_slice(&partial_pt);
+        }
+
+        // Truncate plaintext to original ciphertext length
+        plaintext.truncate(ciphertext.len());
     }
 
     // Generate expected tag
-    let expected_tag = state.finalize((aad.len() * 8) as u64, (plaintext.len() * 8) as u64);
+    let expected_tag = state.finalize((aad.len() * 8) as u64, (ciphertext.len() * 8) as u64);
 
     // Verify tag in constant time
     if !ct_eq(tag, &expected_tag) {

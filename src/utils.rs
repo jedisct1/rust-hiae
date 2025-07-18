@@ -29,25 +29,6 @@ pub fn zero_pad(data: &[u8], block_size_bits: usize) -> Vec<u8> {
     }
 }
 
-/// Truncate data to n bits.
-#[inline]
-pub fn truncate(data: &[u8], n_bits: usize) -> Vec<u8> {
-    let n_bytes = n_bits / 8;
-
-    if n_bits % 8 == 0 {
-        data[..n_bytes.min(data.len())].to_vec()
-    } else {
-        let mut result = data[..(n_bytes + 1).min(data.len())].to_vec();
-        if !result.is_empty() {
-            let mask = (1u8 << (n_bits % 8)) - 1;
-            if let Some(last) = result.last_mut() {
-                *last &= mask;
-            }
-        }
-        result
-    }
-}
-
 /// Split data into blocks of specified size, ignoring partial blocks.
 #[inline]
 pub fn split_blocks(data: &[u8], block_size_bytes: usize) -> impl Iterator<Item = [u8; 16]> + '_ {
@@ -89,14 +70,10 @@ pub fn tail(data: &[u8], n_bits: usize) -> Vec<u8> {
     }
 }
 
-/// XOR two 16-byte blocks.
+/// XOR two 16-byte blocks using SIMD when available.
 #[inline]
 pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
-    let mut result = [0u8; 16];
-    for i in 0..16 {
-        result[i] = a[i] ^ b[i];
-    }
-    result
+    crate::intrinsics::xor_block_simd(a, b)
 }
 
 /// XOR two byte slices of equal length.
@@ -174,21 +151,6 @@ mod tests {
         let padded = zero_pad(data, 128);
         assert_eq!(padded.len(), 16);
         assert_eq!(padded, data);
-    }
-
-    #[test]
-    fn test_truncate() {
-        let data = &[0xff; 10];
-
-        // Truncate to full bytes
-        let result = truncate(data, 64);
-        assert_eq!(result.len(), 8);
-        assert_eq!(result, vec![0xff; 8]);
-
-        // Truncate to partial byte
-        let result = truncate(data, 12);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result, vec![0xff, 0x0f]);
     }
 
     #[test]

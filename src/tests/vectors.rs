@@ -49,23 +49,21 @@ fn run_test_vector(
 
     // Test encryption
     let (ciphertext, computed_tag) = encrypt(&msg_bytes, &ad_bytes, &key, &nonce)
-        .unwrap_or_else(|e| panic!("Test vector {} encryption failed: {}", test_num, e));
+        .unwrap_or_else(|e| panic!("Test vector {test_num} encryption failed: {e}"));
 
     assert_eq!(
         ciphertext, expected_ct,
-        "Test vector {} ciphertext mismatch",
-        test_num
+        "Test vector {test_num} ciphertext mismatch"
     );
-    assert_eq!(computed_tag, tag, "Test vector {} tag mismatch", test_num);
+    assert_eq!(computed_tag, tag, "Test vector {test_num} tag mismatch");
 
     // Test decryption
     let decrypted = decrypt(&ciphertext, &computed_tag, &ad_bytes, &key, &nonce)
-        .unwrap_or_else(|e| panic!("Test vector {} decryption failed: {}", test_num, e));
+        .unwrap_or_else(|e| panic!("Test vector {test_num} decryption failed: {e}"));
 
     assert_eq!(
         decrypted, msg_bytes,
-        "Test vector {} decryption mismatch",
-        test_num
+        "Test vector {test_num} decryption mismatch"
     );
 
     // Test authentication failure with corrupted tag
@@ -74,8 +72,7 @@ fn run_test_vector(
         bad_tag[0] ^= 1;
         assert!(
             decrypt(&ciphertext, &bad_tag, &ad_bytes, &key, &nonce).is_err(),
-            "Test vector {} should fail with bad tag",
-            test_num
+            "Test vector {test_num} should fail with bad tag"
         );
     }
 }

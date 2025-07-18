@@ -93,7 +93,7 @@ fn error_handling_example() -> Result<(), Error> {
         Err(Error::AuthenticationFailed) => {
             println!("  ✓ Authentication failure detected correctly");
         }
-        Err(e) => println!("  ✗ Unexpected error: {}", e),
+        Err(e) => println!("  ✗ Unexpected error: {e}"),
     }
 
     // Test with wrong AAD
@@ -103,7 +103,7 @@ fn error_handling_example() -> Result<(), Error> {
         Err(Error::AuthenticationFailed) => {
             println!("  ✓ Wrong AAD detected correctly");
         }
-        Err(e) => println!("  ✗ Unexpected error: {}", e),
+        Err(e) => println!("  ✗ Unexpected error: {e}"),
     }
 
     // Test with wrong key
@@ -113,7 +113,7 @@ fn error_handling_example() -> Result<(), Error> {
         Err(Error::AuthenticationFailed) => {
             println!("  ✓ Wrong key detected correctly");
         }
-        Err(e) => println!("  ✗ Unexpected error: {}", e),
+        Err(e) => println!("  ✗ Unexpected error: {e}"),
     }
 
     println!("  ✓ All error handling tests passed!");

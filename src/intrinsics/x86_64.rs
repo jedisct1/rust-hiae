@@ -34,6 +34,52 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     unsafe { aesl_impl(block) }
 }
 
+/// SIMD XOR implementation for x86-64 SSE2.
+#[target_feature(enable = "sse2")]
+unsafe fn xor_block_impl(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    // Load both blocks into SSE registers
+    let a_vec = _mm_loadu_si128(a.as_ptr() as *const __m128i);
+    let b_vec = _mm_loadu_si128(b.as_ptr() as *const __m128i);
+
+    // Perform vectorized XOR
+    let result_vec = _mm_xor_si128(a_vec, b_vec);
+
+    // Store result back to array
+    let mut result = [0u8; 16];
+    _mm_storeu_si128(result.as_mut_ptr() as *mut __m128i, result_vec);
+    result
+}
+
+/// Safe wrapper around the x86-64 SSE2 XOR implementation.
+#[inline]
+pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    unsafe { xor_block_impl(a, b) }
+}
+
+/// SIMD reduction XOR for 16 blocks using x86-64 SSE2.
+#[target_feature(enable = "sse2")]
+unsafe fn xor_reduce_blocks_impl(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
+    // Load first block
+    let mut result = _mm_loadu_si128(blocks[0].as_ptr() as *const __m128i);
+
+    // XOR all remaining blocks
+    for block in blocks.iter().skip(1) {
+        let block_vec = _mm_loadu_si128(block.as_ptr() as *const __m128i);
+        result = _mm_xor_si128(result, block_vec);
+    }
+
+    // Store result
+    let mut output = [0u8; 16];
+    _mm_storeu_si128(output.as_mut_ptr() as *mut __m128i, result);
+    output
+}
+
+/// Safe wrapper around the x86-64 SSE2 XOR reduction implementation.
+#[inline]
+pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
+    unsafe { xor_reduce_blocks_impl(blocks) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

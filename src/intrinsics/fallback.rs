@@ -152,6 +152,26 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     state_to_bytes(&state)
 }
 
+/// Portable XOR implementation for 16-byte blocks.
+#[inline]
+pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    let mut result = [0u8; 16];
+    for i in 0..16 {
+        result[i] = a[i] ^ b[i];
+    }
+    result
+}
+
+/// Portable reduction XOR for 16 blocks.
+#[inline]
+pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
+    let mut result = blocks[0];
+    for block in blocks.iter().skip(1) {
+        result = xor_block(&result, block);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

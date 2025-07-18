@@ -38,6 +38,52 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     unsafe { aesl_impl(block) }
 }
 
+/// SIMD XOR implementation for ARM NEON.
+#[target_feature(enable = "neon")]
+unsafe fn xor_block_impl(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    // Load both blocks into NEON registers
+    let a_vec = vld1q_u8(a.as_ptr());
+    let b_vec = vld1q_u8(b.as_ptr());
+
+    // Perform vectorized XOR
+    let result_vec = veorq_u8(a_vec, b_vec);
+
+    // Store result back to array
+    let mut result = [0u8; 16];
+    vst1q_u8(result.as_mut_ptr(), result_vec);
+    result
+}
+
+/// Safe wrapper around the ARM NEON XOR implementation.
+#[inline]
+pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    unsafe { xor_block_impl(a, b) }
+}
+
+/// SIMD reduction XOR for 16 blocks using ARM NEON.
+#[target_feature(enable = "neon")]
+unsafe fn xor_reduce_blocks_impl(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
+    // Load first block
+    let mut result = vld1q_u8(blocks[0].as_ptr());
+
+    // XOR all remaining blocks
+    for block in blocks.iter().skip(1) {
+        let block_vec = vld1q_u8(block.as_ptr());
+        result = veorq_u8(result, block_vec);
+    }
+
+    // Store result
+    let mut output = [0u8; 16];
+    vst1q_u8(output.as_mut_ptr(), result);
+    output
+}
+
+/// Safe wrapper around the ARM NEON XOR reduction implementation.
+#[inline]
+pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
+    unsafe { xor_reduce_blocks_impl(blocks) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
