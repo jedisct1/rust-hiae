@@ -1,7 +1,14 @@
 //! Portable fallback implementation of AES operations using lookup tables.
 
 /// AES S-box lookup table.
-#[allow(dead_code)]
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 const SBOX: [u8; 256] = [
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
     0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
@@ -22,7 +29,14 @@ const SBOX: [u8; 256] = [
 ];
 
 /// Precomputed multiplication by 2 in GF(2^8).
-#[allow(dead_code)]
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 const MUL2: [u8; 256] = [
     0x00, 0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C, 0x0E, 0x10, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E,
     0x20, 0x22, 0x24, 0x26, 0x28, 0x2A, 0x2C, 0x2E, 0x30, 0x32, 0x34, 0x36, 0x38, 0x3A, 0x3C, 0x3E,
@@ -43,7 +57,14 @@ const MUL2: [u8; 256] = [
 ];
 
 /// Precomputed multiplication by 3 in GF(2^8).
-#[allow(dead_code)]
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 const MUL3: [u8; 256] = [
     0x00, 0x03, 0x06, 0x05, 0x0C, 0x0F, 0x0A, 0x09, 0x18, 0x1B, 0x1E, 0x1D, 0x14, 0x17, 0x12, 0x11,
     0x30, 0x33, 0x36, 0x35, 0x3C, 0x3F, 0x3A, 0x39, 0x28, 0x2B, 0x2E, 0x2D, 0x24, 0x27, 0x22, 0x21,
@@ -64,8 +85,15 @@ const MUL3: [u8; 256] = [
 ];
 
 /// Convert 16 bytes to 4x4 AES state matrix (column-major order).
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 fn bytes_to_state(data: &[u8; 16]) -> [[u8; 4]; 4] {
     let mut state = [[0u8; 4]; 4];
     for i in 0..16 {
@@ -75,8 +103,15 @@ fn bytes_to_state(data: &[u8; 16]) -> [[u8; 4]; 4] {
 }
 
 /// Convert 4x4 AES state matrix to 16 bytes (column-major order).
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 fn state_to_bytes(state: &[[u8; 4]; 4]) -> [u8; 16] {
     let mut result = [0u8; 16];
     for i in 0..16 {
@@ -86,8 +121,15 @@ fn state_to_bytes(state: &[[u8; 4]; 4]) -> [u8; 16] {
 }
 
 /// Apply AES SubBytes transformation.
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 fn sub_bytes(state: &mut [[u8; 4]; 4]) {
     for row in state.iter_mut() {
         for byte in row.iter_mut() {
@@ -97,8 +139,15 @@ fn sub_bytes(state: &mut [[u8; 4]; 4]) {
 }
 
 /// Apply AES ShiftRows transformation.
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 fn shift_rows(state: &mut [[u8; 4]; 4]) {
     // Row 0: no shift
     // Row 1: shift left by 1
@@ -125,8 +174,15 @@ fn shift_rows(state: &mut [[u8; 4]; 4]) {
 }
 
 /// Apply AES MixColumns transformation.
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 fn mix_columns(state: &mut [[u8; 4]; 4]) {
     for col in 0..4 {
         let s0 = state[0][col];
@@ -142,8 +198,15 @@ fn mix_columns(state: &mut [[u8; 4]; 4]) {
 }
 
 /// Portable AESL implementation using lookup tables.
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
 #[inline]
-#[allow(dead_code)]
 pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     let mut state = bytes_to_state(block);
     sub_bytes(&mut state);
@@ -152,30 +215,24 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     state_to_bytes(&state)
 }
 
-/// Portable XOR implementation for 16-byte blocks.
-#[inline]
-pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
-    let mut result = [0u8; 16];
-    for i in 0..16 {
-        result[i] = a[i] ^ b[i];
-    }
-    result
-}
-
 /// Portable reduction XOR for 16 blocks.
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+)))]
 #[inline]
 pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
     let mut result = blocks[0];
     for block in blocks.iter().skip(1) {
-        result = xor_block(&result, block);
+        for i in 0..16 {
+            result[i] ^= block[i];
+        }
     }
     result
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_aesl_spec_vector() {
         // Test vector from the specification
@@ -188,7 +245,7 @@ mod tests {
             0x8a, 0xa3,
         ];
 
-        let result = aesl(&input);
+        let result = crate::intrinsics::aesl(&input);
         assert_eq!(result, expected);
     }
 }

@@ -12,35 +12,6 @@ pub fn le64(n: u64) -> [u8; 8] {
     n.to_le_bytes()
 }
 
-/// Zero-pad data to a multiple of block_size_bits.
-#[inline]
-pub fn zero_pad(data: &[u8], block_size_bits: usize) -> Vec<u8> {
-    let block_size_bytes = block_size_bits / 8;
-    let len = data.len();
-
-    if len % block_size_bytes == 0 {
-        data.to_vec()
-    } else {
-        let padding_needed = block_size_bytes - (len % block_size_bytes);
-        let mut padded = Vec::with_capacity(len + padding_needed);
-        padded.extend_from_slice(data);
-        padded.resize(len + padding_needed, 0);
-        padded
-    }
-}
-
-/// Split data into blocks of specified size, ignoring partial blocks.
-#[inline]
-pub fn split_blocks(data: &[u8], block_size_bytes: usize) -> impl Iterator<Item = [u8; 16]> + '_ {
-    debug_assert_eq!(block_size_bytes, 16);
-
-    data.chunks_exact(block_size_bytes).map(|chunk| {
-        let mut block = [0u8; 16];
-        block.copy_from_slice(chunk);
-        block
-    })
-}
-
 /// Get the last n bits of data as bytes.
 #[inline]
 pub fn tail(data: &[u8], n_bits: usize) -> Vec<u8> {
@@ -74,14 +45,6 @@ pub fn tail(data: &[u8], n_bits: usize) -> Vec<u8> {
 #[inline]
 pub fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
     crate::intrinsics::xor_block_simd(a, b)
-}
-
-/// XOR two byte slices of equal length.
-#[inline]
-#[allow(dead_code)]
-pub fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
-    debug_assert_eq!(a.len(), b.len());
-    a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect()
 }
 
 /// Constant-time comparison of two byte arrays.
@@ -136,21 +99,6 @@ mod tests {
             [0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12]
         );
         assert_eq!(le64(0), [0; 8]);
-    }
-
-    #[test]
-    fn test_zero_pad() {
-        let data = &[1, 2, 3];
-        let padded = zero_pad(data, 128);
-        assert_eq!(padded.len(), 16);
-        assert_eq!(&padded[..3], data);
-        assert_eq!(&padded[3..], &[0; 13]);
-
-        // Already aligned
-        let data = &[1u8; 16];
-        let padded = zero_pad(data, 128);
-        assert_eq!(padded.len(), 16);
-        assert_eq!(padded, data);
     }
 
     #[test]

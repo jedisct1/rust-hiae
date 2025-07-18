@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::intrinsics;
-use crate::utils::{self, ct_eq, le64, split_blocks, xor_block, zero_pad};
+use crate::utils::{self, ct_eq, le64, xor_block};
 use alloc::vec::Vec;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -18,7 +18,6 @@ const C1: [u8; 16] = [
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 struct HiaeState {
     blocks: [[u8; 16]; 16],
-    rotation_offset: usize,
 }
 
 impl HiaeState {
@@ -26,78 +25,84 @@ impl HiaeState {
     fn new() -> Self {
         Self {
             blocks: [[0u8; 16]; 16],
-            rotation_offset: 0,
         }
     }
 
-    /// Get the physical block index from a logical index.
-    #[inline]
-    fn get_block_index(&self, logical_index: usize) -> usize {
-        (logical_index + self.rotation_offset) % 16
-    }
-
-    /// Rotate state blocks left by one position (optimized with cycling index).
+    /// Rotate state blocks left by one position.
     #[inline]
     fn rol(&mut self) {
-        self.rotation_offset = (self.rotation_offset + 1) % 16;
+        let temp = self.blocks[0];
+        for i in 0..15 {
+            self.blocks[i] = self.blocks[i + 1];
+        }
+        self.blocks[15] = temp;
     }
 
-    /// Core update function.
+    /// Core update function with compile-time indexing.
     #[inline]
-    fn update(&mut self, xi: &[u8; 16]) {
+    fn update<const I: usize>(&mut self, xi: &[u8; 16]) {
         let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
+            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
             xi,
         );
-        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
-        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], xi);
-        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], xi);
-        self.rol();
+        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
     }
 
-    /// Update function with encryption.
+    /// Update function with encryption and compile-time indexing.
     #[inline]
-    fn update_enc(&mut self, mi: &[u8; 16]) -> [u8; 16] {
+    fn update_enc<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
         let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
+            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
             mi,
         );
-        let ci = xor_block(&temp, &self.blocks[self.get_block_index(9)]);
-        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
-        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], mi);
-        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], mi);
-        self.rol();
+        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
+        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
         ci
     }
 
-    /// Update function with decryption.
+    /// Update function with decryption and compile-time indexing.
     #[inline]
-    fn update_dec(&mut self, ci: &[u8; 16]) -> [u8; 16] {
-        let temp = xor_block(ci, &self.blocks[self.get_block_index(9)]);
+    fn update_dec<const I: usize>(&mut self, ci: &[u8; 16]) -> [u8; 16] {
+        let temp = xor_block(ci, &self.blocks[(I + 9) % 16]);
         let mi = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
+            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
             &temp,
         );
-        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
-        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], &mi);
-        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], &mi);
-        self.rol();
+        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], &mi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], &mi);
         mi
     }
 
     /// Apply 32 update rounds for full diffusion.
     #[inline]
     fn diffuse(&mut self, x: &[u8; 16]) {
-        for _ in 0..32 {
-            self.update(x);
+        for _ in 0..2 {
+            self.update::<0>(x);
+            self.update::<1>(x);
+            self.update::<2>(x);
+            self.update::<3>(x);
+            self.update::<4>(x);
+            self.update::<5>(x);
+            self.update::<6>(x);
+            self.update::<7>(x);
+            self.update::<8>(x);
+            self.update::<9>(x);
+            self.update::<10>(x);
+            self.update::<11>(x);
+            self.update::<12>(x);
+            self.update::<13>(x);
+            self.update::<14>(x);
+            self.update::<15>(x);
         }
     }
 
     /// Initialize state from key and nonce.
     fn init(&mut self, key: &[u8; 32], nonce: &[u8; 16]) {
-        // Reset rotation offset
-        self.rotation_offset = 0;
-
         // Split key into two 128-bit halves
         let mut k0 = [0u8; 16];
         let mut k1 = [0u8; 16];
@@ -126,26 +131,98 @@ impl HiaeState {
         self.diffuse(&C0);
 
         // Final XORs
-        self.blocks[self.get_block_index(9)] = xor_block(&self.blocks[self.get_block_index(9)], &k0);
-        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], &k1);
+        self.blocks[9] = xor_block(&self.blocks[9], &k0);
+        self.blocks[13] = xor_block(&self.blocks[13], &k1);
     }
 
-    /// Absorb a block of associated data.
+    /// Absorb a batch of 16 blocks of associated data.
+    #[inline]
+    fn absorb_batch(&mut self, ai: &[[u8; 16]; 16]) {
+        self.update::<0>(&ai[0]);
+        self.update::<1>(&ai[1]);
+        self.update::<2>(&ai[2]);
+        self.update::<3>(&ai[3]);
+        self.update::<4>(&ai[4]);
+        self.update::<5>(&ai[5]);
+        self.update::<6>(&ai[6]);
+        self.update::<7>(&ai[7]);
+        self.update::<8>(&ai[8]);
+        self.update::<9>(&ai[9]);
+        self.update::<10>(&ai[10]);
+        self.update::<11>(&ai[11]);
+        self.update::<12>(&ai[12]);
+        self.update::<13>(&ai[13]);
+        self.update::<14>(&ai[14]);
+        self.update::<15>(&ai[15]);
+    }
+
+    /// Absorb a single block of associated data.
     #[inline]
     fn absorb(&mut self, ai: &[u8; 16]) {
-        self.update(ai);
+        self.update::<0>(ai);
+        self.rol();
+    }
+
+    /// Encrypt a batch of 16 blocks.
+    #[inline]
+    fn enc_batch(&mut self, mi: &[[u8; 16]; 16]) -> [[u8; 16]; 16] {
+        [
+            self.update_enc::<0>(&mi[0]),
+            self.update_enc::<1>(&mi[1]),
+            self.update_enc::<2>(&mi[2]),
+            self.update_enc::<3>(&mi[3]),
+            self.update_enc::<4>(&mi[4]),
+            self.update_enc::<5>(&mi[5]),
+            self.update_enc::<6>(&mi[6]),
+            self.update_enc::<7>(&mi[7]),
+            self.update_enc::<8>(&mi[8]),
+            self.update_enc::<9>(&mi[9]),
+            self.update_enc::<10>(&mi[10]),
+            self.update_enc::<11>(&mi[11]),
+            self.update_enc::<12>(&mi[12]),
+            self.update_enc::<13>(&mi[13]),
+            self.update_enc::<14>(&mi[14]),
+            self.update_enc::<15>(&mi[15]),
+        ]
     }
 
     /// Encrypt a single block.
     #[inline]
     fn enc(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        self.update_enc(mi)
+        let result = self.update_enc::<0>(mi);
+        self.rol();
+        result
+    }
+
+    /// Decrypt a batch of 16 blocks.
+    #[inline]
+    fn dec_batch(&mut self, ci: &[[u8; 16]; 16]) -> [[u8; 16]; 16] {
+        [
+            self.update_dec::<0>(&ci[0]),
+            self.update_dec::<1>(&ci[1]),
+            self.update_dec::<2>(&ci[2]),
+            self.update_dec::<3>(&ci[3]),
+            self.update_dec::<4>(&ci[4]),
+            self.update_dec::<5>(&ci[5]),
+            self.update_dec::<6>(&ci[6]),
+            self.update_dec::<7>(&ci[7]),
+            self.update_dec::<8>(&ci[8]),
+            self.update_dec::<9>(&ci[9]),
+            self.update_dec::<10>(&ci[10]),
+            self.update_dec::<11>(&ci[11]),
+            self.update_dec::<12>(&ci[12]),
+            self.update_dec::<13>(&ci[13]),
+            self.update_dec::<14>(&ci[14]),
+            self.update_dec::<15>(&ci[15]),
+        ]
     }
 
     /// Decrypt a single block.
     #[inline]
     fn dec(&mut self, ci: &[u8; 16]) -> [u8; 16] {
-        self.update_dec(ci)
+        let result = self.update_dec::<0>(ci);
+        self.rol();
+        result
     }
 
     /// Decrypt a partial block.
@@ -156,10 +233,10 @@ impl HiaeState {
 
         let ks = xor_block(
             &xor_block(
-                &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
+                &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
                 &zero_block,
             ),
-            &self.blocks[self.get_block_index(9)],
+            &self.blocks[9],
         );
 
         // Step 2: Construct full ciphertext block
@@ -171,7 +248,8 @@ impl HiaeState {
         ci_block[cn.len()..].copy_from_slice(&tail_bytes[..16 - cn.len()]);
 
         // Step 3: Decrypt full block
-        let mi = self.update_dec(&ci_block);
+        let mi = self.update_dec::<0>(&ci_block);
+        self.rol();
 
         // Step 4: Extract partial plaintext
         let mut result = Vec::with_capacity(cn.len());
@@ -212,26 +290,63 @@ pub fn encrypt(
     // Pre-allocate ciphertext with exact capacity
     let mut ciphertext = Vec::with_capacity(plaintext.len());
 
-    // Process associated data
+    // Process associated data with batch processing
     if !aad.is_empty() {
-        let ad_padded = zero_pad(aad, 128);
-        let ad_blocks = split_blocks(&ad_padded, 16);
-        for block in ad_blocks {
+        let mut i = 0;
+        // Process full 16-block batches (256 bytes)
+        while i + 256 <= aad.len() {
+            let mut batch = [[0u8; 16]; 16];
+            for j in 0..16 {
+                batch[j].copy_from_slice(&aad[i + j * 16..i + (j + 1) * 16]);
+            }
+            state.absorb_batch(&batch);
+            i += 256;
+        }
+        // Process remaining full blocks
+        while i + 16 <= aad.len() {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&aad[i..i + 16]);
+            state.absorb(&block);
+            i += 16;
+        }
+        // Process partial block
+        if i < aad.len() {
+            let mut block = [0u8; 16];
+            block[..aad.len() - i].copy_from_slice(&aad[i..]);
             state.absorb(&block);
         }
     }
 
-    // Encrypt plaintext
+    // Encrypt plaintext with batch processing
     if !plaintext.is_empty() {
-        let msg_padded = zero_pad(plaintext, 128);
-        let msg_blocks = split_blocks(&msg_padded, 16);
-        for block in msg_blocks {
+        let mut i = 0;
+        // Process full 16-block batches (256 bytes)
+        while i + 256 <= plaintext.len() {
+            let mut batch = [[0u8; 16]; 16];
+            for j in 0..16 {
+                batch[j].copy_from_slice(&plaintext[i + j * 16..i + (j + 1) * 16]);
+            }
+            let encrypted_batch = state.enc_batch(&batch);
+            for block in encrypted_batch {
+                ciphertext.extend_from_slice(&block);
+            }
+            i += 256;
+        }
+        // Process remaining full blocks
+        while i + 16 <= plaintext.len() {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&plaintext[i..i + 16]);
             let encrypted_block = state.enc(&block);
             ciphertext.extend_from_slice(&encrypted_block);
+            i += 16;
         }
-
-        // Truncate ciphertext to original plaintext length
-        ciphertext.truncate(plaintext.len());
+        // Process partial block
+        if i < plaintext.len() {
+            let mut block = [0u8; 16];
+            block[..plaintext.len() - i].copy_from_slice(&plaintext[i..]);
+            let encrypted_block = state.enc(&block);
+            ciphertext.extend_from_slice(&encrypted_block[..plaintext.len() - i]);
+        }
     }
 
     // Generate authentication tag
@@ -257,35 +372,61 @@ pub fn decrypt(
     // Pre-allocate plaintext with exact capacity
     let mut plaintext = Vec::with_capacity(ciphertext.len());
 
-    // Process associated data
+    // Process associated data with batch processing
     if !aad.is_empty() {
-        let ad_padded = zero_pad(aad, 128);
-        let ad_blocks = split_blocks(&ad_padded, 16);
-        for block in ad_blocks {
+        let mut i = 0;
+        // Process full 16-block batches (256 bytes)
+        while i + 256 <= aad.len() {
+            let mut batch = [[0u8; 16]; 16];
+            for j in 0..16 {
+                batch[j].copy_from_slice(&aad[i + j * 16..i + (j + 1) * 16]);
+            }
+            state.absorb_batch(&batch);
+            i += 256;
+        }
+        // Process remaining full blocks
+        while i + 16 <= aad.len() {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&aad[i..i + 16]);
+            state.absorb(&block);
+            i += 16;
+        }
+        // Process partial block
+        if i < aad.len() {
+            let mut block = [0u8; 16];
+            block[..aad.len() - i].copy_from_slice(&aad[i..]);
             state.absorb(&block);
         }
     }
 
-    // Decrypt ciphertext
+    // Decrypt ciphertext with batch processing
     if !ciphertext.is_empty() {
-        let ct_blocks = split_blocks(ciphertext, 16);
-        let remainder = ciphertext.len() % 16;
-
-        for block in ct_blocks {
+        let mut i = 0;
+        // Process full 16-block batches (256 bytes)
+        while i + 256 <= ciphertext.len() {
+            let mut batch = [[0u8; 16]; 16];
+            for j in 0..16 {
+                batch[j].copy_from_slice(&ciphertext[i + j * 16..i + (j + 1) * 16]);
+            }
+            let decrypted_batch = state.dec_batch(&batch);
+            for block in decrypted_batch {
+                plaintext.extend_from_slice(&block);
+            }
+            i += 256;
+        }
+        // Process remaining full blocks
+        while i + 16 <= ciphertext.len() {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&ciphertext[i..i + 16]);
             let decrypted_block = state.dec(&block);
             plaintext.extend_from_slice(&decrypted_block);
+            i += 16;
         }
-
-        // Handle partial block if present
-        if remainder != 0 {
-            let partial_start = ciphertext.len() - remainder;
-            let partial_ct = &ciphertext[partial_start..];
-            let partial_pt = state.dec_partial(partial_ct);
+        // Process partial block
+        if i < ciphertext.len() {
+            let partial_pt = state.dec_partial(&ciphertext[i..]);
             plaintext.extend_from_slice(&partial_pt);
         }
-
-        // Truncate plaintext to original ciphertext length
-        plaintext.truncate(ciphertext.len());
     }
 
     // Generate expected tag
