@@ -18,6 +18,7 @@ const C1: [u8; 16] = [
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 struct HiaeState {
     blocks: [[u8; 16]; 16],
+    rotation_offset: usize,
 }
 
 impl HiaeState {
@@ -25,29 +26,32 @@ impl HiaeState {
     fn new() -> Self {
         Self {
             blocks: [[0u8; 16]; 16],
+            rotation_offset: 0,
         }
     }
 
-    /// Rotate state blocks left by one position.
+    /// Get the physical block index from a logical index.
+    #[inline]
+    fn get_block_index(&self, logical_index: usize) -> usize {
+        (logical_index + self.rotation_offset) % 16
+    }
+
+    /// Rotate state blocks left by one position (optimized with cycling index).
     #[inline]
     fn rol(&mut self) {
-        let temp = self.blocks[0];
-        for i in 0..15 {
-            self.blocks[i] = self.blocks[i + 1];
-        }
-        self.blocks[15] = temp;
+        self.rotation_offset = (self.rotation_offset + 1) % 16;
     }
 
     /// Core update function.
     #[inline]
     fn update(&mut self, xi: &[u8; 16]) {
         let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
+            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
             xi,
         );
-        self.blocks[0] = xor_block(&intrinsics::aesl(&self.blocks[13]), &temp);
-        self.blocks[3] = xor_block(&self.blocks[3], xi);
-        self.blocks[13] = xor_block(&self.blocks[13], xi);
+        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
+        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], xi);
+        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], xi);
         self.rol();
     }
 
@@ -55,13 +59,13 @@ impl HiaeState {
     #[inline]
     fn update_enc(&mut self, mi: &[u8; 16]) -> [u8; 16] {
         let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
+            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
             mi,
         );
-        let ci = xor_block(&temp, &self.blocks[9]);
-        self.blocks[0] = xor_block(&intrinsics::aesl(&self.blocks[13]), &temp);
-        self.blocks[3] = xor_block(&self.blocks[3], mi);
-        self.blocks[13] = xor_block(&self.blocks[13], mi);
+        let ci = xor_block(&temp, &self.blocks[self.get_block_index(9)]);
+        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
+        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], mi);
+        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], mi);
         self.rol();
         ci
     }
@@ -69,14 +73,14 @@ impl HiaeState {
     /// Update function with decryption.
     #[inline]
     fn update_dec(&mut self, ci: &[u8; 16]) -> [u8; 16] {
-        let temp = xor_block(ci, &self.blocks[9]);
+        let temp = xor_block(ci, &self.blocks[self.get_block_index(9)]);
         let mi = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
+            &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
             &temp,
         );
-        self.blocks[0] = xor_block(&intrinsics::aesl(&self.blocks[13]), &temp);
-        self.blocks[3] = xor_block(&self.blocks[3], &mi);
-        self.blocks[13] = xor_block(&self.blocks[13], &mi);
+        self.blocks[self.get_block_index(0)] = xor_block(&intrinsics::aesl(&self.blocks[self.get_block_index(13)]), &temp);
+        self.blocks[self.get_block_index(3)] = xor_block(&self.blocks[self.get_block_index(3)], &mi);
+        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], &mi);
         self.rol();
         mi
     }
@@ -91,6 +95,9 @@ impl HiaeState {
 
     /// Initialize state from key and nonce.
     fn init(&mut self, key: &[u8; 32], nonce: &[u8; 16]) {
+        // Reset rotation offset
+        self.rotation_offset = 0;
+
         // Split key into two 128-bit halves
         let mut k0 = [0u8; 16];
         let mut k1 = [0u8; 16];
@@ -119,8 +126,8 @@ impl HiaeState {
         self.diffuse(&C0);
 
         // Final XORs
-        self.blocks[9] = xor_block(&self.blocks[9], &k0);
-        self.blocks[13] = xor_block(&self.blocks[13], &k1);
+        self.blocks[self.get_block_index(9)] = xor_block(&self.blocks[self.get_block_index(9)], &k0);
+        self.blocks[self.get_block_index(13)] = xor_block(&self.blocks[self.get_block_index(13)], &k1);
     }
 
     /// Absorb a block of associated data.
@@ -149,10 +156,10 @@ impl HiaeState {
 
         let ks = xor_block(
             &xor_block(
-                &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
+                &intrinsics::aesl(&xor_block(&self.blocks[self.get_block_index(0)], &self.blocks[self.get_block_index(1)])),
                 &zero_block,
             ),
-            &self.blocks[9],
+            &self.blocks[self.get_block_index(9)],
         );
 
         // Step 2: Construct full ciphertext block
