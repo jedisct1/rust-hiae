@@ -39,8 +39,77 @@ impl HiaeState {
     }
 
     /// Core update function with compile-time indexing.
+    /// Uses platform-specific optimizations from the HiAE specification.
     #[inline]
     fn update<const I: usize>(&mut self, xi: &[u8; 16]) {
+        // Enable ARM optimizations for testing
+        #[cfg(all(
+            target_arch = "aarch64",
+            target_feature = "neon",
+            target_feature = "aes"
+        ))]
+        {
+            self.update_arm_optimized::<I>(xi);
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+        {
+            self.update_intel_optimized::<I>(xi);
+        }
+        #[cfg(not(any(
+            all(
+                target_arch = "aarch64",
+                target_feature = "neon",
+                target_feature = "aes"
+            ),
+            all(target_arch = "x86_64", target_feature = "aes")
+        )))]
+        {
+            self.update_fallback::<I>(xi);
+        }
+    }
+
+    /// ARM-optimized update function using XAESL.
+    /// This implements the corrected specification: Update_ARM(xi)
+    #[cfg(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ))]
+    #[inline]
+    fn update_arm_optimized<const I: usize>(&mut self, xi: &[u8; 16]) {
+        // ARM-optimized implementation matching corrected specification:
+        // t = XAESL(S0, S1) ^ xi
+        // S0 = AESL(S13) ^ t
+        // S3 = S3 ^ xi
+        // S13 = S13 ^ xi
+
+        let temp = xor_block(
+            &intrinsics::xaesl(&self.blocks[I], &self.blocks[(I + 1) % 16]),
+            xi,
+        );
+        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
+    }
+
+    /// Intel-optimized update function using AESLX.
+    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+    #[inline]
+    fn update_intel_optimized<const I: usize>(&mut self, xi: &[u8; 16]) {
+        // Intel-optimized implementation from specification
+        let temp = xor_block(
+            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
+            xi,
+        );
+        self.blocks[I] = intrinsics::aeslx(&self.blocks[(I + 13) % 16], &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
+    }
+
+    /// Fallback update function for other architectures.
+    #[allow(dead_code)]
+    #[inline]
+    fn update_fallback<const I: usize>(&mut self, xi: &[u8; 16]) {
         let temp = xor_block(
             &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
             xi,
@@ -51,8 +120,75 @@ impl HiaeState {
     }
 
     /// Update function with encryption and compile-time indexing.
+    /// Uses platform-specific optimizations from the HiAE specification.
     #[inline]
     fn update_enc<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
+        // Enable ARM optimizations for testing
+        #[cfg(all(
+            target_arch = "aarch64",
+            target_feature = "neon",
+            target_feature = "aes"
+        ))]
+        {
+            self.update_enc_arm_optimized::<I>(mi)
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+        {
+            self.update_enc_intel_optimized::<I>(mi)
+        }
+        #[cfg(not(any(
+            all(
+                target_arch = "aarch64",
+                target_feature = "neon",
+                target_feature = "aes"
+            ),
+            all(target_arch = "x86_64", target_feature = "aes")
+        )))]
+        {
+            self.update_enc_fallback::<I>(mi)
+        }
+    }
+
+    /// ARM-optimized update_enc function using XAESL.
+    #[cfg(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ))]
+    #[inline]
+    fn update_enc_arm_optimized<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
+        // ARM-optimized implementation from corrected specification
+        let temp = xor_block(
+            &intrinsics::xaesl(&self.blocks[I], &self.blocks[(I + 1) % 16]),
+            mi,
+        );
+        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
+        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
+        ci
+    }
+
+    /// Intel-optimized update_enc function using AESLX.
+    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+    #[inline]
+    fn update_enc_intel_optimized<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
+        // Intel-optimized implementation from specification
+        let temp = xor_block(
+            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
+            mi,
+        );
+        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
+        self.blocks[I] = intrinsics::aeslx(&self.blocks[(I + 13) % 16], &temp);
+        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
+        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
+        ci
+    }
+
+    /// Fallback update_enc function for other architectures.
+    #[allow(dead_code)]
+    #[inline]
+    fn update_enc_fallback<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
         let temp = xor_block(
             &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
             mi,
@@ -443,6 +579,40 @@ pub fn decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ))]
+    #[test]
+    fn test_arm_vs_fallback_update() {
+        // Test that ARM optimization produces same result as fallback
+        let mut state_arm = HiaeState::new();
+        let mut state_fallback = HiaeState::new();
+
+        // Initialize both states identically
+        let key = [0x12; 32];
+        let nonce = [0x34; 16];
+        state_arm.init(&key, &nonce);
+        state_fallback.init(&key, &nonce);
+
+        let test_block = [0x56; 16];
+
+        // Apply ARM optimization
+        state_arm.update_arm_optimized::<0>(&test_block);
+        state_arm.rol();
+
+        // Apply fallback
+        state_fallback.update_fallback::<0>(&test_block);
+        state_fallback.rol();
+
+        // Compare states
+        assert_eq!(
+            state_arm.blocks, state_fallback.blocks,
+            "ARM and fallback should produce identical results"
+        );
+    }
 
     #[test]
     fn test_state_operations() {

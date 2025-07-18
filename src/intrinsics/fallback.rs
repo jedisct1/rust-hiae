@@ -173,7 +173,7 @@ fn shift_rows(state: &mut [[u8; 4]; 4]) {
     state[3][0] = temp;
 }
 
-/// Apply AES MixColumns transformation.
+/// Apply AES MixColumns transformation with unrolled loop for better performance.
 #[cfg(not(any(
     all(
         target_arch = "aarch64",
@@ -184,17 +184,47 @@ fn shift_rows(state: &mut [[u8; 4]; 4]) {
 )))]
 #[inline]
 fn mix_columns(state: &mut [[u8; 4]; 4]) {
-    for col in 0..4 {
-        let s0 = state[0][col];
-        let s1 = state[1][col];
-        let s2 = state[2][col];
-        let s3 = state[3][col];
+    // Unroll the loop for better compiler optimization
 
-        state[0][col] = MUL2[s0 as usize] ^ MUL3[s1 as usize] ^ s2 ^ s3;
-        state[1][col] = s0 ^ MUL2[s1 as usize] ^ MUL3[s2 as usize] ^ s3;
-        state[2][col] = s0 ^ s1 ^ MUL2[s2 as usize] ^ MUL3[s3 as usize];
-        state[3][col] = MUL3[s0 as usize] ^ s1 ^ s2 ^ MUL2[s3 as usize];
-    }
+    // Column 0
+    let s0 = state[0][0];
+    let s1 = state[1][0];
+    let s2 = state[2][0];
+    let s3 = state[3][0];
+    state[0][0] = MUL2[s0 as usize] ^ MUL3[s1 as usize] ^ s2 ^ s3;
+    state[1][0] = s0 ^ MUL2[s1 as usize] ^ MUL3[s2 as usize] ^ s3;
+    state[2][0] = s0 ^ s1 ^ MUL2[s2 as usize] ^ MUL3[s3 as usize];
+    state[3][0] = MUL3[s0 as usize] ^ s1 ^ s2 ^ MUL2[s3 as usize];
+
+    // Column 1
+    let s0 = state[0][1];
+    let s1 = state[1][1];
+    let s2 = state[2][1];
+    let s3 = state[3][1];
+    state[0][1] = MUL2[s0 as usize] ^ MUL3[s1 as usize] ^ s2 ^ s3;
+    state[1][1] = s0 ^ MUL2[s1 as usize] ^ MUL3[s2 as usize] ^ s3;
+    state[2][1] = s0 ^ s1 ^ MUL2[s2 as usize] ^ MUL3[s3 as usize];
+    state[3][1] = MUL3[s0 as usize] ^ s1 ^ s2 ^ MUL2[s3 as usize];
+
+    // Column 2
+    let s0 = state[0][2];
+    let s1 = state[1][2];
+    let s2 = state[2][2];
+    let s3 = state[3][2];
+    state[0][2] = MUL2[s0 as usize] ^ MUL3[s1 as usize] ^ s2 ^ s3;
+    state[1][2] = s0 ^ MUL2[s1 as usize] ^ MUL3[s2 as usize] ^ s3;
+    state[2][2] = s0 ^ s1 ^ MUL2[s2 as usize] ^ MUL3[s3 as usize];
+    state[3][2] = MUL3[s0 as usize] ^ s1 ^ s2 ^ MUL2[s3 as usize];
+
+    // Column 3
+    let s0 = state[0][3];
+    let s1 = state[1][3];
+    let s2 = state[2][3];
+    let s3 = state[3][3];
+    state[0][3] = MUL2[s0 as usize] ^ MUL3[s1 as usize] ^ s2 ^ s3;
+    state[1][3] = s0 ^ MUL2[s1 as usize] ^ MUL3[s2 as usize] ^ s3;
+    state[2][3] = s0 ^ s1 ^ MUL2[s2 as usize] ^ MUL3[s3 as usize];
+    state[3][3] = MUL3[s0 as usize] ^ s1 ^ s2 ^ MUL2[s3 as usize];
 }
 
 /// Portable AESL implementation using lookup tables.
@@ -215,7 +245,7 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
     state_to_bytes(&state)
 }
 
-/// Portable reduction XOR for 16 blocks.
+/// Portable reduction XOR for 16 blocks with optimized loop unrolling.
 #[cfg(not(any(
     all(target_arch = "aarch64", target_feature = "neon"),
     all(target_arch = "x86_64", target_feature = "sse2")
@@ -223,11 +253,63 @@ pub fn aesl(block: &[u8; 16]) -> [u8; 16] {
 #[inline]
 pub fn xor_reduce_blocks(blocks: &[[u8; 16]; 16]) -> [u8; 16] {
     let mut result = blocks[0];
-    for block in blocks.iter().skip(1) {
+
+    // Process blocks in batches of 4 for better cache efficiency
+    // This helps the compiler generate more efficient code
+    for chunk in blocks[1..].chunks_exact(4) {
+        for i in 0..16 {
+            result[i] ^= chunk[0][i] ^ chunk[1][i] ^ chunk[2][i] ^ chunk[3][i];
+        }
+    }
+
+    // Handle remaining blocks (should be 3 or fewer)
+    for block in blocks[1..].chunks_exact(4).remainder() {
         for i in 0..16 {
             result[i] ^= block[i];
         }
     }
+
+    result
+}
+
+/// Portable batch AESL processing for 4 blocks with loop unrolling.
+#[cfg(not(any(
+    all(
+        target_arch = "aarch64",
+        target_feature = "neon",
+        target_feature = "aes"
+    ),
+    all(target_arch = "x86_64", target_feature = "aes")
+)))]
+#[inline]
+pub fn aesl_batch4(blocks: &[[u8; 16]; 4]) -> [[u8; 16]; 4] {
+    // Process all 4 blocks using the portable AESL implementation
+    // Unroll the loop for better optimization
+    [
+        aesl(&blocks[0]),
+        aesl(&blocks[1]),
+        aesl(&blocks[2]),
+        aesl(&blocks[3]),
+    ]
+}
+
+/// Portable batch XOR processing for 4 block pairs with loop unrolling.
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+)))]
+#[inline]
+pub fn xor_batch4(a_blocks: &[[u8; 16]; 4], b_blocks: &[[u8; 16]; 4]) -> [[u8; 16]; 4] {
+    let mut result = [[0u8; 16]; 4];
+
+    // Unroll the outer loop and inner loop for better performance
+    for i in 0..16 {
+        result[0][i] = a_blocks[0][i] ^ b_blocks[0][i];
+        result[1][i] = a_blocks[1][i] ^ b_blocks[1][i];
+        result[2][i] = a_blocks[2][i] ^ b_blocks[2][i];
+        result[3][i] = a_blocks[3][i] ^ b_blocks[3][i];
+    }
+
     result
 }
 
