@@ -20,7 +20,7 @@ zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 hex = "0.4"
-criterion = { version = "0.6", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports"] }
 
 [profile.release]
 lto = true
