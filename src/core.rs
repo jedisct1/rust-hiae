@@ -214,26 +214,27 @@ impl HiaeState {
         mi
     }
 
-    /// Apply 32 update rounds for full diffusion.
+    /// Apply 32 update rounds for full diffusion, alternating between x0 and x1.
     #[inline]
-    fn diffuse(&mut self, x: &[u8; 16]) {
+    fn diffuse(&mut self, x0: &[u8; 16], x1: &[u8; 16]) {
+        // Two full rounds, alternating between x0 and x1 for each index
         for _ in 0..2 {
-            self.update::<0>(x);
-            self.update::<1>(x);
-            self.update::<2>(x);
-            self.update::<3>(x);
-            self.update::<4>(x);
-            self.update::<5>(x);
-            self.update::<6>(x);
-            self.update::<7>(x);
-            self.update::<8>(x);
-            self.update::<9>(x);
-            self.update::<10>(x);
-            self.update::<11>(x);
-            self.update::<12>(x);
-            self.update::<13>(x);
-            self.update::<14>(x);
-            self.update::<15>(x);
+            self.update::<0>(x0);
+            self.update::<1>(x1);
+            self.update::<2>(x0);
+            self.update::<3>(x1);
+            self.update::<4>(x0);
+            self.update::<5>(x1);
+            self.update::<6>(x0);
+            self.update::<7>(x1);
+            self.update::<8>(x0);
+            self.update::<9>(x1);
+            self.update::<10>(x0);
+            self.update::<11>(x1);
+            self.update::<12>(x0);
+            self.update::<13>(x1);
+            self.update::<14>(x0);
+            self.update::<15>(x1);
         }
     }
 
@@ -247,28 +248,24 @@ impl HiaeState {
 
         // Initialize state blocks according to specification
         self.blocks[0] = C0;
-        self.blocks[1] = k1;
-        self.blocks[2] = *nonce;
-        self.blocks[3] = C0;
+        self.blocks[1] = k0;
+        self.blocks[2] = C0;
+        self.blocks[3] = *nonce;
         self.blocks[4] = [0u8; 16];
-        self.blocks[5] = xor_block(nonce, &k0);
+        self.blocks[5] = k0;
         self.blocks[6] = [0u8; 16];
         self.blocks[7] = C1;
-        self.blocks[8] = xor_block(nonce, &k1);
+        self.blocks[8] = k1;
         self.blocks[9] = [0u8; 16];
-        self.blocks[10] = k1;
+        self.blocks[10] = xor_block(nonce, &k1);
         self.blocks[11] = C0;
         self.blocks[12] = C1;
         self.blocks[13] = k1;
         self.blocks[14] = [0u8; 16];
         self.blocks[15] = xor_block(&C0, &C1);
 
-        // Diffuse with C0
-        self.diffuse(&C0);
-
-        // Final XORs
-        self.blocks[9] = xor_block(&self.blocks[9], &k0);
-        self.blocks[13] = xor_block(&self.blocks[13], &k1);
+        // Diffuse with k0 and k1
+        self.diffuse(&k0, &k1);
     }
 
     /// Absorb a batch of 16 blocks of associated data.
@@ -403,7 +400,7 @@ impl HiaeState {
         t[..8].copy_from_slice(&ad_len_bytes);
         t[8..].copy_from_slice(&msg_len_bytes);
 
-        self.diffuse(&t);
+        self.diffuse(&t, &t);
 
         // XOR all state blocks using vectorized reduction
         intrinsics::xor_reduce_blocks(&self.blocks)
