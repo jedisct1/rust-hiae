@@ -62,13 +62,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     result == 0
 }
 
-/// Validate input parameters for encryption/decryption.
-pub fn validate_params(
-    plaintext_len: usize,
-    aad_len: usize,
-    key: &[u8],
-    nonce: &[u8],
-) -> Result<()> {
+fn validate_common(aad_len: usize, key: &[u8], nonce: &[u8]) -> Result<()> {
     if key.len() != 32 {
         return Err(Error::InvalidKeyLength);
     }
@@ -77,12 +71,40 @@ pub fn validate_params(
         return Err(Error::InvalidNonceLength);
     }
 
+    if (aad_len as u64) > MAX_DATA_LEN {
+        return Err(Error::AssociatedDataTooLong);
+    }
+
+    Ok(())
+}
+
+/// Validate input parameters for encryption.
+pub fn validate_encrypt_params(
+    plaintext_len: usize,
+    aad_len: usize,
+    key: &[u8],
+    nonce: &[u8],
+) -> Result<()> {
+    validate_common(aad_len, key, nonce)?;
+
     if (plaintext_len as u64) > MAX_DATA_LEN {
         return Err(Error::PlaintextTooLong);
     }
 
-    if (aad_len as u64) > MAX_DATA_LEN {
-        return Err(Error::AssociatedDataTooLong);
+    Ok(())
+}
+
+/// Validate input parameters for decryption.
+pub fn validate_decrypt_params(
+    ciphertext_len: usize,
+    aad_len: usize,
+    key: &[u8],
+    nonce: &[u8],
+) -> Result<()> {
+    validate_common(aad_len, key, nonce)?;
+
+    if (ciphertext_len as u64) > MAX_DATA_LEN {
+        return Err(Error::CiphertextTooLong);
     }
 
     Ok(())
@@ -121,12 +143,13 @@ mod tests {
         let key = [0u8; 32];
         let nonce = [0u8; 16];
 
-        assert!(validate_params(100, 200, &key, &nonce).is_ok());
+        assert!(validate_encrypt_params(100, 200, &key, &nonce).is_ok());
+        assert!(validate_decrypt_params(100, 200, &key, &nonce).is_ok());
 
         // Wrong key length
-        assert!(validate_params(100, 200, &[0u8; 31], &nonce).is_err());
+        assert!(validate_encrypt_params(100, 200, &[0u8; 31], &nonce).is_err());
 
         // Wrong nonce length
-        assert!(validate_params(100, 200, &key, &[0u8; 15]).is_err());
+        assert!(validate_decrypt_params(100, 200, &key, &[0u8; 15]).is_err());
     }
 }

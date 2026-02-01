@@ -415,7 +415,7 @@ pub fn encrypt(
     nonce: &[u8; 16],
 ) -> Result<(Vec<u8>, [u8; 16])> {
     // Validate input parameters
-    utils::validate_params(plaintext.len(), aad.len(), key, nonce)?;
+    utils::validate_encrypt_params(plaintext.len(), aad.len(), key, nonce)?;
 
     let mut state = HiaeState::new();
     state.init(key, nonce);
@@ -497,7 +497,7 @@ pub fn decrypt(
     nonce: &[u8; 16],
 ) -> Result<Vec<u8>> {
     // Validate input parameters
-    utils::validate_params(ciphertext.len(), aad.len(), key, nonce)?;
+    utils::validate_decrypt_params(ciphertext.len(), aad.len(), key, nonce)?;
 
     let mut state = HiaeState::new();
     state.init(key, nonce);
