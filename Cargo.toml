@@ -8,6 +8,13 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/hiae-aead/draft-pham-hiae"
 keywords = ["cryptography", "aead", "encryption", "authentication"]
 categories = ["cryptography", "no-std"]
+include = [
+    "src/**",
+    "benches/**",
+    "examples/**",
+    "README.md",
+    "LICENSE*",
+]
 
 [features]
 default = ["std"]
