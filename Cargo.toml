@@ -1,6 +1,6 @@
 [package]
 name = "hiae"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Frank Denis"]
 description = "High-throughput Authenticated Encryption (HiAE) algorithm implementation"
