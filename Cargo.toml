@@ -12,11 +12,6 @@ categories = ["cryptography", "no-std"]
 [features]
 default = ["std"]
 std = []
-aes-ni = []
-neon = []
-
-[dependencies]
-zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 hex = "0.4"

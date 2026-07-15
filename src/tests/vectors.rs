@@ -206,23 +206,3 @@ fn test_vector_10_all_zeros_plaintext() {
         "ad0b841c3d145a6ee86dc7b67338f113"
     );
 }
-
-#[cfg(test)]
-mod aesl_tests {
-    use crate::intrinsics;
-
-    #[test]
-    fn test_aesl_spec_example() {
-        let input = [
-            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
-            0xee, 0xff,
-        ];
-        let expected = [
-            0x63, 0x79, 0xe6, 0xd9, 0xf4, 0x67, 0xfb, 0x76, 0xad, 0x06, 0x3c, 0xf4, 0xd2, 0xeb,
-            0x8a, 0xa3,
-        ];
-
-        let result = intrinsics::aesl(&input);
-        assert_eq!(result, expected, "AESL function test vector failed");
-    }
-}

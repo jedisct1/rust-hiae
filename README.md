@@ -4,10 +4,11 @@ A Rust implementation of the HiAE (High-throughput Authenticated Encryption) alg
 
 ## Features
 
-- **High Performance**: Leverages platform-specific SIMD instructions (ARM NEON, x86-64 AES-NI)
-- **Security**: 256-bit keys, 128-bit nonces and tags, constant-time operations
-- **Cross-Platform**: Optimized for both ARM and x86 architectures with fallback implementations
-- **Memory Safe**: Implemented in Rust with automatic memory zeroing and no unsafe code
+- **High Performance**: Leverages platform-specific SIMD instructions (ARM NEON, x86-64 AES-NI).
+  Throughput matches the reference C implementation.
+- **Security**: 256-bit keys, 128-bit nonces and tags
+- **Cross-Platform**: Optimized for both ARM and x86 architectures with a portable fallback
+- **Memory Safe**: Written in Rust; unsafe code is confined to the SIMD backend and buffer handoff
 - **No-std Compatible**: Can be used in embedded environments
 
 ## Quick Start
@@ -35,6 +36,22 @@ let (ciphertext, tag) = encrypt(plaintext, aad, &key, &nonce)?;
 // Decrypt
 let decrypted = decrypt(&ciphertext, &tag, aad, &key, &nonce)?;
 assert_eq!(decrypted, plaintext);
+```
+
+For allocation-free operation, `encrypt_into` and `decrypt_into` write into
+caller-provided buffers:
+
+```rust
+use hiae::{encrypt_into, decrypt_into};
+
+let key = [0u8; 32];
+let nonce = [0u8; 16];
+let mut ciphertext = [0u8; 13];
+
+let tag = encrypt_into(b"Hello, world!", b"", &key, &nonce, &mut ciphertext)?;
+
+let mut plaintext = [0u8; 13];
+decrypt_into(&ciphertext, &tag, b"", &key, &nonce, &mut plaintext)?;
 ```
 
 ## Performance Optimization
@@ -77,23 +94,16 @@ For specific CPU features, you can enable them explicitly:
 
 ```bash
 # For x86-64 with AES-NI
-RUSTFLAGS="-C target-feature=+aes,+pclmul" cargo build --release
-
-# For ARM with NEON
-RUSTFLAGS="-C target-feature=+neon" cargo build --release
+RUSTFLAGS="-C target-feature=+aes" cargo build --release
 ```
 
-### Architecture-Specific Features
-
-The library includes optional feature flags for explicit architecture support:
+The SIMD backend is selected at compile time.
+On aarch64 Apple targets, NEON and the AES extensions are part of the default
+target features, so no extra flags are needed.
+On x86-64, `aes` is not part of the baseline: without `-C target-cpu=native`
+or `-C target-feature=+aes`, the portable fallback is used.
 
 ```bash
-# Build with x86-64 AES-NI support
-cargo build --features aes-ni --release
-
-# Build with ARM NEON support  
-cargo build --features neon --release
-
 # Build without std for embedded use
 cargo build --no-default-features --release
 ```
@@ -163,18 +173,22 @@ HiAE is based on the [IETF Internet-Draft](https://github.com/hiae-aead/draft-ph
 
 - **Nonce Reuse**: Never reuse a nonce with the same key
 - **Key Generation**: Use cryptographically secure random number generators
-- **Constant Time**: Tag verification is performed in constant time to prevent timing attacks
-- **Memory Safety**: All sensitive data is automatically zeroed after use
+- **Constant Time**: Tag verification is performed in constant time.
+  On the hardware-accelerated backends (NEON, AES-NI), all data processing is
+  constant time as well.
+  The portable fallback uses S-box table lookups and is NOT constant time;
+  avoid it where cache-timing attacks are a concern.
+- **Memory Zeroing**: The cipher state is zeroed after use
 
 ## Supported Platforms
 
-The library automatically detects and uses the best available implementation:
+The implementation is selected at compile time:
 
-| Platform | SIMD Instructions | Performance |
-|----------|------------------|-------------|
-| x86-64 | AES-NI + PCLMUL | Highest |
-| ARM64 | NEON + AES | Highest |
-| Other | Portable fallback | Good |
+| Platform | SIMD Instructions                  | Performance             |
+| -------- | ---------------------------------- | ----------------------- |
+| ARM64    | NEON + AES (+ SHA3 when available) | Highest                 |
+| x86-64   | AES-NI                             | Highest                 |
+| Other    | Portable fallback                  | Slow, not constant time |
 
 ## API Documentation
 

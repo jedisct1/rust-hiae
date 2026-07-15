@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use hiae::{decrypt, encrypt};
+use hiae::{decrypt, decrypt_into, encrypt, encrypt_into};
 use std::hint::black_box;
 
 /// Generate test data of the specified size
@@ -95,6 +95,49 @@ fn bench_decrypt_sizes(c: &mut Criterion) {
                     black_box(&nonce),
                 );
                 black_box(result).unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
+/// Benchmark the allocation-free API across different data sizes
+fn bench_into_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("into_throughput");
+
+    let sizes = [64, 256, 1024, 4096, 16384, 65536, 262144, 1048576];
+
+    for size in sizes {
+        let (plaintext, aad, key, nonce) = generate_test_data(size);
+        let (ciphertext, tag) = encrypt(&plaintext, &aad, &key, &nonce).unwrap();
+        let mut ct_buf = vec![0u8; size];
+        let mut pt_buf = vec![0u8; size];
+
+        group.throughput(Throughput::Elements((size as u64) * 8));
+        group.bench_with_input(BenchmarkId::new("encrypt_into", size), &size, |b, _| {
+            b.iter(|| {
+                let tag = encrypt_into(
+                    black_box(&plaintext),
+                    black_box(&aad),
+                    black_box(&key),
+                    black_box(&nonce),
+                    &mut ct_buf,
+                )
+                .unwrap();
+                black_box(tag)
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("decrypt_into", size), &size, |b, _| {
+            b.iter(|| {
+                decrypt_into(
+                    black_box(&ciphertext),
+                    black_box(&tag),
+                    black_box(&aad),
+                    black_box(&key),
+                    black_box(&nonce),
+                    &mut pt_buf,
+                )
+                .unwrap();
             });
         });
     }
@@ -199,6 +242,7 @@ criterion_group!(
     benches,
     bench_encrypt_sizes,
     bench_decrypt_sizes,
+    bench_into_sizes,
     bench_roundtrip_sizes,
     bench_aad_sizes,
     bench_setup_overhead

@@ -1,494 +1,147 @@
 //! Core HiAE algorithm implementation.
 
+use crate::backend::HiaeState;
 use crate::error::{Error, Result};
-use crate::intrinsics;
-use crate::utils::{self, ct_eq, le64, xor_block};
+use crate::utils::{self, ct_eq};
 use alloc::vec::Vec;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// HiAE constants C0 and C1 (domain separation constants).
-const C0: [u8; 16] = [
-    0x32, 0x43, 0xF6, 0xA8, 0x88, 0x5A, 0x30, 0x8D, 0x31, 0x31, 0x98, 0xA2, 0xE0, 0x37, 0x07, 0x34,
-];
-const C1: [u8; 16] = [
-    0x4A, 0x40, 0x93, 0x82, 0x22, 0x99, 0xF3, 0x1D, 0x00, 0x82, 0xEF, 0xA9, 0x8E, 0xC4, 0xE6, 0xC8,
-];
-
-/// HiAE state containing sixteen 128-bit blocks.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-struct HiaeState {
-    blocks: [[u8; 16]; 16],
+/// Run the full encryption pipeline, writing the ciphertext to `out`.
+///
+/// # Safety
+/// `out` must be valid for writing `plaintext.len()` bytes and must not
+/// overlap the input slices.
+#[allow(unsafe_code)]
+unsafe fn encrypt_raw(
+    plaintext: &[u8],
+    aad: &[u8],
+    key: &[u8; 32],
+    nonce: &[u8; 16],
+    out: *mut u8,
+) -> [u8; 16] {
+    let mut state = HiaeState::new(key, nonce);
+    state.absorb(aad);
+    state.enc(out, plaintext);
+    state.finalize(aad.len() as u64, plaintext.len() as u64)
 }
 
-impl HiaeState {
-    /// Create a new zero-initialized state.
-    fn new() -> Self {
-        Self {
-            blocks: [[0u8; 16]; 16],
-        }
-    }
-
-    /// Rotate state blocks left by one position.
-    #[inline]
-    fn rol(&mut self) {
-        let temp = self.blocks[0];
-        for i in 0..15 {
-            self.blocks[i] = self.blocks[i + 1];
-        }
-        self.blocks[15] = temp;
-    }
-
-    /// Core update function with compile-time indexing.
-    /// Uses platform-specific optimizations from the HiAE specification.
-    #[inline]
-    fn update<const I: usize>(&mut self, xi: &[u8; 16]) {
-        // Enable ARM optimizations for testing
-        #[cfg(all(
-            target_arch = "aarch64",
-            target_feature = "neon",
-            target_feature = "aes"
-        ))]
-        {
-            self.update_arm_optimized::<I>(xi);
-        }
-        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
-        {
-            self.update_intel_optimized::<I>(xi);
-        }
-        #[cfg(not(any(
-            all(
-                target_arch = "aarch64",
-                target_feature = "neon",
-                target_feature = "aes"
-            ),
-            all(target_arch = "x86_64", target_feature = "aes")
-        )))]
-        {
-            self.update_fallback::<I>(xi);
-        }
-    }
-
-    /// ARM-optimized update function using XAESL.
-    /// This implements the corrected specification: Update_ARM(xi)
-    #[cfg(all(
-        target_arch = "aarch64",
-        target_feature = "neon",
-        target_feature = "aes"
-    ))]
-    #[inline]
-    fn update_arm_optimized<const I: usize>(&mut self, xi: &[u8; 16]) {
-        // ARM-optimized implementation matching corrected specification:
-        // t = XAESL(S0, S1) ^ xi
-        // S0 = AESL(S13) ^ t
-        // S3 = S3 ^ xi
-        // S13 = S13 ^ xi
-
-        let temp = xor_block(
-            &intrinsics::xaesl(&self.blocks[I], &self.blocks[(I + 1) % 16]),
-            xi,
-        );
-        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
-    }
-
-    /// Intel-optimized update function using AESLX.
-    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
-    #[inline]
-    fn update_intel_optimized<const I: usize>(&mut self, xi: &[u8; 16]) {
-        // Intel-optimized implementation from specification
-        let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
-            xi,
-        );
-        self.blocks[I] = intrinsics::aeslx(&self.blocks[(I + 13) % 16], &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
-    }
-
-    /// Fallback update function for other architectures.
-    #[allow(dead_code)]
-    #[inline]
-    fn update_fallback<const I: usize>(&mut self, xi: &[u8; 16]) {
-        let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
-            xi,
-        );
-        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], xi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], xi);
-    }
-
-    /// Update function with encryption and compile-time indexing.
-    /// Uses platform-specific optimizations from the HiAE specification.
-    #[inline]
-    fn update_enc<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        // Enable ARM optimizations for testing
-        #[cfg(all(
-            target_arch = "aarch64",
-            target_feature = "neon",
-            target_feature = "aes"
-        ))]
-        {
-            self.update_enc_arm_optimized::<I>(mi)
-        }
-        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
-        {
-            self.update_enc_intel_optimized::<I>(mi)
-        }
-        #[cfg(not(any(
-            all(
-                target_arch = "aarch64",
-                target_feature = "neon",
-                target_feature = "aes"
-            ),
-            all(target_arch = "x86_64", target_feature = "aes")
-        )))]
-        {
-            self.update_enc_fallback::<I>(mi)
-        }
-    }
-
-    /// ARM-optimized update_enc function using XAESL.
-    #[cfg(all(
-        target_arch = "aarch64",
-        target_feature = "neon",
-        target_feature = "aes"
-    ))]
-    #[inline]
-    fn update_enc_arm_optimized<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        // ARM-optimized implementation from corrected specification
-        let temp = xor_block(
-            &intrinsics::xaesl(&self.blocks[I], &self.blocks[(I + 1) % 16]),
-            mi,
-        );
-        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
-        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
-        ci
-    }
-
-    /// Intel-optimized update_enc function using AESLX.
-    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
-    #[inline]
-    fn update_enc_intel_optimized<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        // Intel-optimized implementation from specification
-        let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
-            mi,
-        );
-        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
-        self.blocks[I] = intrinsics::aeslx(&self.blocks[(I + 13) % 16], &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
-        ci
-    }
-
-    /// Fallback update_enc function for other architectures.
-    #[allow(dead_code)]
-    #[inline]
-    fn update_enc_fallback<const I: usize>(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        let temp = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
-            mi,
-        );
-        let ci = xor_block(&temp, &self.blocks[(I + 9) % 16]);
-        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], mi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], mi);
-        ci
-    }
-
-    /// Update function with decryption and compile-time indexing.
-    #[inline]
-    fn update_dec<const I: usize>(&mut self, ci: &[u8; 16]) -> [u8; 16] {
-        let temp = xor_block(ci, &self.blocks[(I + 9) % 16]);
-        let mi = xor_block(
-            &intrinsics::aesl(&xor_block(&self.blocks[I], &self.blocks[(I + 1) % 16])),
-            &temp,
-        );
-        self.blocks[I] = xor_block(&intrinsics::aesl(&self.blocks[(I + 13) % 16]), &temp);
-        self.blocks[(I + 3) % 16] = xor_block(&self.blocks[(I + 3) % 16], &mi);
-        self.blocks[(I + 13) % 16] = xor_block(&self.blocks[(I + 13) % 16], &mi);
-        mi
-    }
-
-    /// Apply 32 update rounds for full diffusion, alternating between x0 and x1.
-    #[inline]
-    fn diffuse(&mut self, x0: &[u8; 16], x1: &[u8; 16]) {
-        // Two full rounds, alternating between x0 and x1 for each index
-        for _ in 0..2 {
-            self.update::<0>(x0);
-            self.update::<1>(x1);
-            self.update::<2>(x0);
-            self.update::<3>(x1);
-            self.update::<4>(x0);
-            self.update::<5>(x1);
-            self.update::<6>(x0);
-            self.update::<7>(x1);
-            self.update::<8>(x0);
-            self.update::<9>(x1);
-            self.update::<10>(x0);
-            self.update::<11>(x1);
-            self.update::<12>(x0);
-            self.update::<13>(x1);
-            self.update::<14>(x0);
-            self.update::<15>(x1);
-        }
-    }
-
-    /// Initialize state from key and nonce.
-    fn init(&mut self, key: &[u8; 32], nonce: &[u8; 16]) {
-        // Split key into two 128-bit halves
-        let mut k0 = [0u8; 16];
-        let mut k1 = [0u8; 16];
-        k0.copy_from_slice(&key[..16]);
-        k1.copy_from_slice(&key[16..]);
-
-        // Initialize state blocks according to specification
-        self.blocks[0] = C0;
-        self.blocks[1] = k0;
-        self.blocks[2] = C0;
-        self.blocks[3] = *nonce;
-        self.blocks[4] = [0u8; 16];
-        self.blocks[5] = k0;
-        self.blocks[6] = [0u8; 16];
-        self.blocks[7] = C1;
-        self.blocks[8] = k1;
-        self.blocks[9] = [0u8; 16];
-        self.blocks[10] = xor_block(nonce, &k1);
-        self.blocks[11] = C0;
-        self.blocks[12] = C1;
-        self.blocks[13] = k1;
-        self.blocks[14] = [0u8; 16];
-        self.blocks[15] = xor_block(&C0, &C1);
-
-        // Diffuse with k0 and k1
-        self.diffuse(&k0, &k1);
-    }
-
-    /// Absorb a batch of 16 blocks of associated data.
-    #[inline]
-    fn absorb_batch(&mut self, ai: &[[u8; 16]; 16]) {
-        self.update::<0>(&ai[0]);
-        self.update::<1>(&ai[1]);
-        self.update::<2>(&ai[2]);
-        self.update::<3>(&ai[3]);
-        self.update::<4>(&ai[4]);
-        self.update::<5>(&ai[5]);
-        self.update::<6>(&ai[6]);
-        self.update::<7>(&ai[7]);
-        self.update::<8>(&ai[8]);
-        self.update::<9>(&ai[9]);
-        self.update::<10>(&ai[10]);
-        self.update::<11>(&ai[11]);
-        self.update::<12>(&ai[12]);
-        self.update::<13>(&ai[13]);
-        self.update::<14>(&ai[14]);
-        self.update::<15>(&ai[15]);
-    }
-
-    /// Absorb a single block of associated data.
-    #[inline]
-    fn absorb(&mut self, ai: &[u8; 16]) {
-        self.update::<0>(ai);
-        self.rol();
-    }
-
-    /// Encrypt a batch of 16 blocks.
-    #[inline]
-    fn enc_batch(&mut self, mi: &[[u8; 16]; 16]) -> [[u8; 16]; 16] {
-        [
-            self.update_enc::<0>(&mi[0]),
-            self.update_enc::<1>(&mi[1]),
-            self.update_enc::<2>(&mi[2]),
-            self.update_enc::<3>(&mi[3]),
-            self.update_enc::<4>(&mi[4]),
-            self.update_enc::<5>(&mi[5]),
-            self.update_enc::<6>(&mi[6]),
-            self.update_enc::<7>(&mi[7]),
-            self.update_enc::<8>(&mi[8]),
-            self.update_enc::<9>(&mi[9]),
-            self.update_enc::<10>(&mi[10]),
-            self.update_enc::<11>(&mi[11]),
-            self.update_enc::<12>(&mi[12]),
-            self.update_enc::<13>(&mi[13]),
-            self.update_enc::<14>(&mi[14]),
-            self.update_enc::<15>(&mi[15]),
-        ]
-    }
-
-    /// Encrypt a single block.
-    #[inline]
-    fn enc(&mut self, mi: &[u8; 16]) -> [u8; 16] {
-        let result = self.update_enc::<0>(mi);
-        self.rol();
-        result
-    }
-
-    /// Decrypt a batch of 16 blocks.
-    #[inline]
-    fn dec_batch(&mut self, ci: &[[u8; 16]; 16]) -> [[u8; 16]; 16] {
-        [
-            self.update_dec::<0>(&ci[0]),
-            self.update_dec::<1>(&ci[1]),
-            self.update_dec::<2>(&ci[2]),
-            self.update_dec::<3>(&ci[3]),
-            self.update_dec::<4>(&ci[4]),
-            self.update_dec::<5>(&ci[5]),
-            self.update_dec::<6>(&ci[6]),
-            self.update_dec::<7>(&ci[7]),
-            self.update_dec::<8>(&ci[8]),
-            self.update_dec::<9>(&ci[9]),
-            self.update_dec::<10>(&ci[10]),
-            self.update_dec::<11>(&ci[11]),
-            self.update_dec::<12>(&ci[12]),
-            self.update_dec::<13>(&ci[13]),
-            self.update_dec::<14>(&ci[14]),
-            self.update_dec::<15>(&ci[15]),
-        ]
-    }
-
-    /// Decrypt a single block.
-    #[inline]
-    fn dec(&mut self, ci: &[u8; 16]) -> [u8; 16] {
-        let result = self.update_dec::<0>(ci);
-        self.rol();
-        result
-    }
-
-    /// Decrypt a partial block.
-    fn dec_partial(&mut self, cn: &[u8]) -> Vec<u8> {
-        // Step 1: Recover keystream
-        let mut zero_block = [0u8; 16];
-        zero_block[..cn.len()].copy_from_slice(cn);
-
-        let ks = xor_block(
-            &xor_block(
-                &intrinsics::aesl(&xor_block(&self.blocks[0], &self.blocks[1])),
-                &zero_block,
-            ),
-            &self.blocks[9],
-        );
-
-        // Step 2: Construct full ciphertext block
-        let tail_bits = 128 - (cn.len() * 8);
-        let tail_bytes = utils::tail(&ks, tail_bits);
-
-        let mut ci_block = [0u8; 16];
-        ci_block[..cn.len()].copy_from_slice(cn);
-        ci_block[cn.len()..].copy_from_slice(&tail_bytes[..16 - cn.len()]);
-
-        // Step 3: Decrypt full block
-        let mi = self.update_dec::<0>(&ci_block);
-        self.rol();
-
-        // Step 4: Extract partial plaintext
-        let mut result = Vec::with_capacity(cn.len());
-        result.extend_from_slice(&mi[..cn.len()]);
-        result
-    }
-
-    /// Generate authentication tag.
-    fn finalize(&mut self, ad_len_bits: u64, msg_len_bits: u64) -> [u8; 16] {
-        // Create length encoding block
-        let ad_len_bytes = le64(ad_len_bits);
-        let msg_len_bytes = le64(msg_len_bits);
-
-        let mut t = [0u8; 16];
-        t[..8].copy_from_slice(&ad_len_bytes);
-        t[8..].copy_from_slice(&msg_len_bytes);
-
-        self.diffuse(&t, &t);
-
-        // XOR all state blocks using vectorized reduction
-        intrinsics::xor_reduce_blocks(&self.blocks)
-    }
+/// Run the full decryption pipeline, writing the plaintext to `out`,
+/// and return the expected tag. The caller checks it.
+///
+/// # Safety
+/// `out` must be valid for writing `ciphertext.len()` bytes and must not
+/// overlap the input slices.
+#[allow(unsafe_code)]
+unsafe fn decrypt_raw(
+    ciphertext: &[u8],
+    aad: &[u8],
+    key: &[u8; 32],
+    nonce: &[u8; 16],
+    out: *mut u8,
+) -> [u8; 16] {
+    let mut state = HiaeState::new(key, nonce);
+    state.absorb(aad);
+    state.dec(out, ciphertext);
+    state.finalize(aad.len() as u64, ciphertext.len() as u64)
 }
 
-/// Encrypt plaintext with associated data using HiAE.
+/// Encrypts plaintext with associated data using HiAE.
+///
+/// Returns the ciphertext and the 128-bit authentication tag.
+/// The key must be uniformly random, and the nonce must never be reused
+/// with the same key.
+///
+/// # Example
+///
+/// ```rust
+/// use hiae::encrypt;
+///
+/// let key = [0u8; 32];
+/// let nonce = [0u8; 16];
+/// let plaintext = b"secret message";
+/// let aad = b"public header";
+///
+/// let (ciphertext, tag) = encrypt(plaintext, aad, &key, &nonce)?;
+/// # Ok::<(), hiae::Error>(())
+/// ```
+#[allow(unsafe_code)]
 pub fn encrypt(
     plaintext: &[u8],
     aad: &[u8],
     key: &[u8; 32],
     nonce: &[u8; 16],
 ) -> Result<(Vec<u8>, [u8; 16])> {
-    // Validate input parameters
-    utils::validate_encrypt_params(plaintext.len(), aad.len(), key, nonce)?;
+    utils::validate_encrypt_params(plaintext.len(), aad.len())?;
 
-    let mut state = HiaeState::new();
-    state.init(key, nonce);
-
-    // Pre-allocate ciphertext with exact capacity
     let mut ciphertext = Vec::with_capacity(plaintext.len());
-
-    // Process associated data with batch processing
-    if !aad.is_empty() {
-        let mut i = 0;
-        // Process full 16-block batches (256 bytes)
-        while i + 256 <= aad.len() {
-            let mut batch = [[0u8; 16]; 16];
-            for j in 0..16 {
-                batch[j].copy_from_slice(&aad[i + j * 16..i + (j + 1) * 16]);
-            }
-            state.absorb_batch(&batch);
-            i += 256;
-        }
-        // Process remaining full blocks
-        while i + 16 <= aad.len() {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(&aad[i..i + 16]);
-            state.absorb(&block);
-            i += 16;
-        }
-        // Process partial block
-        if i < aad.len() {
-            let mut block = [0u8; 16];
-            block[..aad.len() - i].copy_from_slice(&aad[i..]);
-            state.absorb(&block);
-        }
-    }
-
-    // Encrypt plaintext with batch processing
-    if !plaintext.is_empty() {
-        let mut i = 0;
-        // Process full 16-block batches (256 bytes)
-        while i + 256 <= plaintext.len() {
-            let mut batch = [[0u8; 16]; 16];
-            for j in 0..16 {
-                batch[j].copy_from_slice(&plaintext[i + j * 16..i + (j + 1) * 16]);
-            }
-            let encrypted_batch = state.enc_batch(&batch);
-            for block in encrypted_batch {
-                ciphertext.extend_from_slice(&block);
-            }
-            i += 256;
-        }
-        // Process remaining full blocks
-        while i + 16 <= plaintext.len() {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(&plaintext[i..i + 16]);
-            let encrypted_block = state.enc(&block);
-            ciphertext.extend_from_slice(&encrypted_block);
-            i += 16;
-        }
-        // Process partial block
-        if i < plaintext.len() {
-            let mut block = [0u8; 16];
-            block[..plaintext.len() - i].copy_from_slice(&plaintext[i..]);
-            let encrypted_block = state.enc(&block);
-            ciphertext.extend_from_slice(&encrypted_block[..plaintext.len() - i]);
-        }
-    }
-
-    // Generate authentication tag
-    let tag = state.finalize((aad.len() * 8) as u64, (plaintext.len() * 8) as u64);
+    // SAFETY: the reserved capacity covers plaintext.len() bytes and
+    // encrypt_raw() initializes all of them before the length is set.
+    let tag = unsafe {
+        let tag = encrypt_raw(plaintext, aad, key, nonce, ciphertext.as_mut_ptr());
+        ciphertext.set_len(plaintext.len());
+        tag
+    };
 
     Ok((ciphertext, tag))
 }
 
-/// Decrypt ciphertext and verify authentication tag.
+/// Encrypts plaintext into a caller-provided buffer, avoiding allocation.
+///
+/// `ciphertext` must be exactly `plaintext.len()` bytes long.
+/// Returns the authentication tag on success.
+///
+/// # Example
+///
+/// ```rust
+/// use hiae::encrypt_into;
+///
+/// let key = [0u8; 32];
+/// let nonce = [0u8; 16];
+/// let plaintext = b"secret message";
+/// let mut ciphertext = [0u8; 14];
+///
+/// let tag = encrypt_into(plaintext, b"", &key, &nonce, &mut ciphertext)?;
+/// # Ok::<(), hiae::Error>(())
+/// ```
+#[allow(unsafe_code)]
+pub fn encrypt_into(
+    plaintext: &[u8],
+    aad: &[u8],
+    key: &[u8; 32],
+    nonce: &[u8; 16],
+    ciphertext: &mut [u8],
+) -> Result<[u8; 16]> {
+    utils::validate_encrypt_params(plaintext.len(), aad.len())?;
+    if ciphertext.len() != plaintext.len() {
+        return Err(Error::OutputBufferMismatch);
+    }
+
+    // SAFETY: ciphertext is exactly plaintext.len() bytes.
+    Ok(unsafe { encrypt_raw(plaintext, aad, key, nonce, ciphertext.as_mut_ptr()) })
+}
+
+/// Decrypts ciphertext and verifies the authentication tag.
+///
+/// Returns the plaintext, or an error if the tag does not match; no
+/// plaintext is returned in that case.
+/// Tag comparison runs in constant time.
+///
+/// # Example
+///
+/// ```rust
+/// use hiae::{encrypt, decrypt};
+///
+/// let key = [0u8; 32];
+/// let nonce = [0u8; 16];
+/// let plaintext = b"secret message";
+/// let aad = b"public header";
+///
+/// let (ciphertext, tag) = encrypt(plaintext, aad, &key, &nonce)?;
+/// let decrypted = decrypt(&ciphertext, &tag, aad, &key, &nonce)?;
+///
+/// assert_eq!(decrypted, plaintext);
+/// # Ok::<(), hiae::Error>(())
+/// ```
+#[allow(unsafe_code)]
 pub fn decrypt(
     ciphertext: &[u8],
     tag: &[u8; 16],
@@ -496,76 +149,17 @@ pub fn decrypt(
     key: &[u8; 32],
     nonce: &[u8; 16],
 ) -> Result<Vec<u8>> {
-    // Validate input parameters
-    utils::validate_decrypt_params(ciphertext.len(), aad.len(), key, nonce)?;
+    utils::validate_decrypt_params(ciphertext.len(), aad.len())?;
 
-    let mut state = HiaeState::new();
-    state.init(key, nonce);
-
-    // Pre-allocate plaintext with exact capacity
     let mut plaintext = Vec::with_capacity(ciphertext.len());
+    // SAFETY: the reserved capacity covers ciphertext.len() bytes and
+    // decrypt_raw() initializes all of them before the length is set.
+    let expected_tag = unsafe {
+        let tag = decrypt_raw(ciphertext, aad, key, nonce, plaintext.as_mut_ptr());
+        plaintext.set_len(ciphertext.len());
+        tag
+    };
 
-    // Process associated data with batch processing
-    if !aad.is_empty() {
-        let mut i = 0;
-        // Process full 16-block batches (256 bytes)
-        while i + 256 <= aad.len() {
-            let mut batch = [[0u8; 16]; 16];
-            for j in 0..16 {
-                batch[j].copy_from_slice(&aad[i + j * 16..i + (j + 1) * 16]);
-            }
-            state.absorb_batch(&batch);
-            i += 256;
-        }
-        // Process remaining full blocks
-        while i + 16 <= aad.len() {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(&aad[i..i + 16]);
-            state.absorb(&block);
-            i += 16;
-        }
-        // Process partial block
-        if i < aad.len() {
-            let mut block = [0u8; 16];
-            block[..aad.len() - i].copy_from_slice(&aad[i..]);
-            state.absorb(&block);
-        }
-    }
-
-    // Decrypt ciphertext with batch processing
-    if !ciphertext.is_empty() {
-        let mut i = 0;
-        // Process full 16-block batches (256 bytes)
-        while i + 256 <= ciphertext.len() {
-            let mut batch = [[0u8; 16]; 16];
-            for j in 0..16 {
-                batch[j].copy_from_slice(&ciphertext[i + j * 16..i + (j + 1) * 16]);
-            }
-            let decrypted_batch = state.dec_batch(&batch);
-            for block in decrypted_batch {
-                plaintext.extend_from_slice(&block);
-            }
-            i += 256;
-        }
-        // Process remaining full blocks
-        while i + 16 <= ciphertext.len() {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(&ciphertext[i..i + 16]);
-            let decrypted_block = state.dec(&block);
-            plaintext.extend_from_slice(&decrypted_block);
-            i += 16;
-        }
-        // Process partial block
-        if i < ciphertext.len() {
-            let partial_pt = state.dec_partial(&ciphertext[i..]);
-            plaintext.extend_from_slice(&partial_pt);
-        }
-    }
-
-    // Generate expected tag
-    let expected_tag = state.finalize((aad.len() * 8) as u64, (ciphertext.len() * 8) as u64);
-
-    // Verify tag in constant time
     if !ct_eq(tag, &expected_tag) {
         return Err(Error::AuthenticationFailed);
     }
@@ -573,65 +167,54 @@ pub fn decrypt(
     Ok(plaintext)
 }
 
+/// Decrypts ciphertext into a caller-provided buffer, avoiding allocation.
+///
+/// `plaintext` must be exactly `ciphertext.len()` bytes long.
+/// If tag verification fails, the buffer is zeroed and an error is returned.
+///
+/// # Example
+///
+/// ```rust
+/// use hiae::{encrypt_into, decrypt_into};
+///
+/// let key = [0u8; 32];
+/// let nonce = [0u8; 16];
+/// let mut ciphertext = [0u8; 14];
+/// let tag = encrypt_into(b"secret message", b"", &key, &nonce, &mut ciphertext)?;
+///
+/// let mut plaintext = [0u8; 14];
+/// decrypt_into(&ciphertext, &tag, b"", &key, &nonce, &mut plaintext)?;
+/// assert_eq!(&plaintext, b"secret message");
+/// # Ok::<(), hiae::Error>(())
+/// ```
+#[allow(unsafe_code)]
+pub fn decrypt_into(
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+    aad: &[u8],
+    key: &[u8; 32],
+    nonce: &[u8; 16],
+    plaintext: &mut [u8],
+) -> Result<()> {
+    utils::validate_decrypt_params(ciphertext.len(), aad.len())?;
+    if plaintext.len() != ciphertext.len() {
+        return Err(Error::OutputBufferMismatch);
+    }
+
+    // SAFETY: plaintext is exactly ciphertext.len() bytes.
+    let expected_tag = unsafe { decrypt_raw(ciphertext, aad, key, nonce, plaintext.as_mut_ptr()) };
+
+    if !ct_eq(tag, &expected_tag) {
+        plaintext.fill(0);
+        return Err(Error::AuthenticationFailed);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(all(
-        target_arch = "aarch64",
-        target_feature = "neon",
-        target_feature = "aes"
-    ))]
-    #[test]
-    fn test_arm_vs_fallback_update() {
-        // Test that ARM optimization produces same result as fallback
-        let mut state_arm = HiaeState::new();
-        let mut state_fallback = HiaeState::new();
-
-        // Initialize both states identically
-        let key = [0x12; 32];
-        let nonce = [0x34; 16];
-        state_arm.init(&key, &nonce);
-        state_fallback.init(&key, &nonce);
-
-        let test_block = [0x56; 16];
-
-        // Apply ARM optimization
-        state_arm.update_arm_optimized::<0>(&test_block);
-        state_arm.rol();
-
-        // Apply fallback
-        state_fallback.update_fallback::<0>(&test_block);
-        state_fallback.rol();
-
-        // Compare states
-        assert_eq!(
-            state_arm.blocks, state_fallback.blocks,
-            "ARM and fallback should produce identical results"
-        );
-    }
-
-    #[test]
-    fn test_state_operations() {
-        let mut state = HiaeState::new();
-        let key = [0u8; 32];
-        let nonce = [0u8; 16];
-
-        state.init(&key, &nonce);
-
-        // Test basic operations don't panic
-        let block = [0x55u8; 16];
-        state.absorb(&block);
-
-        let encrypted = state.enc(&block);
-        assert_ne!(encrypted, block); // Should be different
-
-        // Reset state and decrypt
-        state.init(&key, &nonce);
-        state.absorb(&block);
-        let decrypted = state.dec(&encrypted);
-        assert_eq!(decrypted, block);
-    }
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
@@ -650,14 +233,26 @@ mod tests {
     fn test_empty_inputs() {
         let key = [0u8; 32];
         let nonce = [0u8; 16];
-        let plaintext = b"";
-        let aad = b"";
 
-        let (ciphertext, tag) = encrypt(plaintext, aad, &key, &nonce).unwrap();
+        let (ciphertext, tag) = encrypt(b"", b"", &key, &nonce).unwrap();
         assert!(ciphertext.is_empty());
 
-        let decrypted = decrypt(&ciphertext, &tag, aad, &key, &nonce).unwrap();
-        assert_eq!(decrypted, plaintext);
+        let decrypted = decrypt(&ciphertext, &tag, b"", &key, &nonce).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn test_all_message_lengths_roundtrip() {
+        let key = [0x07u8; 32];
+        let nonce = [0x0bu8; 16];
+        let aad = b"header";
+        let msg: Vec<u8> = (0..600).map(|i| i as u8).collect();
+
+        for len in 0..msg.len() {
+            let (ciphertext, tag) = encrypt(&msg[..len], aad, &key, &nonce).unwrap();
+            let decrypted = decrypt(&ciphertext, &tag, aad, &key, &nonce).unwrap();
+            assert_eq!(decrypted, &msg[..len], "roundtrip failed at length {len}");
+        }
     }
 
     #[test]
@@ -668,11 +263,71 @@ mod tests {
         let aad = b"public header";
 
         let (ciphertext, mut tag) = encrypt(plaintext, aad, &key, &nonce).unwrap();
-
-        // Corrupt the tag
         tag[0] ^= 1;
 
         let result = decrypt(&ciphertext, &tag, aad, &key, &nonce);
+        assert!(matches!(result, Err(Error::AuthenticationFailed)));
+    }
+
+    #[test]
+    fn test_into_matches_allocating_api() {
+        let key = [0x11u8; 32];
+        let nonce = [0x22u8; 16];
+        let aad = b"header";
+        let msg: Vec<u8> = (0..600).map(|i| (i * 3) as u8).collect();
+
+        for len in [0, 1, 15, 16, 17, 255, 256, 257, 300, 511, 512, 600] {
+            let (expected_ct, expected_tag) = encrypt(&msg[..len], aad, &key, &nonce).unwrap();
+
+            let mut ct = vec![0u8; len];
+            let tag = encrypt_into(&msg[..len], aad, &key, &nonce, &mut ct).unwrap();
+            assert_eq!(ct, expected_ct, "ciphertext mismatch at length {len}");
+            assert_eq!(tag, expected_tag, "tag mismatch at length {len}");
+
+            let mut pt = vec![0u8; len];
+            decrypt_into(&ct, &tag, aad, &key, &nonce, &mut pt).unwrap();
+            assert_eq!(pt, &msg[..len], "plaintext mismatch at length {len}");
+        }
+    }
+
+    #[test]
+    fn test_into_buffer_length_mismatch() {
+        let key = [0u8; 32];
+        let nonce = [0u8; 16];
+        let mut short = [0u8; 3];
+
+        let result = encrypt_into(b"four", b"", &key, &nonce, &mut short);
+        assert!(matches!(result, Err(Error::OutputBufferMismatch)));
+
+        let result = decrypt_into(b"four", &[0u8; 16], b"", &key, &nonce, &mut short);
+        assert!(matches!(result, Err(Error::OutputBufferMismatch)));
+    }
+
+    #[test]
+    fn test_decrypt_into_zeroes_buffer_on_bad_tag() {
+        let key = [0u8; 32];
+        let nonce = [0u8; 16];
+
+        let mut ct = [0u8; 40];
+        let mut tag = encrypt_into(&[0xaau8; 40], b"", &key, &nonce, &mut ct).unwrap();
+        tag[0] ^= 1;
+
+        let mut pt = [0x55u8; 40];
+        let result = decrypt_into(&ct, &tag, b"", &key, &nonce, &mut pt);
+        assert!(matches!(result, Err(Error::AuthenticationFailed)));
+        assert_eq!(pt, [0u8; 40]);
+    }
+
+    #[test]
+    fn test_corrupted_ciphertext_fails() {
+        let key = [0u8; 32];
+        let nonce = [0u8; 16];
+        let plaintext = [0x55u8; 300];
+
+        let (mut ciphertext, tag) = encrypt(&plaintext, b"", &key, &nonce).unwrap();
+        ciphertext[299] ^= 1;
+
+        let result = decrypt(&ciphertext, &tag, b"", &key, &nonce);
         assert!(matches!(result, Err(Error::AuthenticationFailed)));
     }
 }
