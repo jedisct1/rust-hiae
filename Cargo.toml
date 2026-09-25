@@ -1,6 +1,6 @@
 [package]
 name = "hiae"
-version = "0.1.3"
+version = "0.3.0"
 edition = "2021"
 authors = ["Frank Denis"]
 description = "HiAE authenticated encryption with associated data (AEAD) in Rust, with AES-NI, ARM NEON, and no_std support"
